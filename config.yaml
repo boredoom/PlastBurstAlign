@@ -58,11 +58,53 @@ concat: false
 #   verbose: false
 #   dealign: false 
 
-
 # For MUSCLE:
-alignment_tool: "muscle"
-alignment_tool_path: "/usr/bin/muscle"
-alignment_tool_config:
-  perm: "none"           # Guide tree permutation: none, abc, acb, bca (default: none)
-  perturb: 0             # Perturbation seed: 0, 1, 2... (default: 0)
-  
+# alignment_tool: "muscle"
+# alignment_tool_path: "/usr/bin/muscle"
+# alignment_tool_config:
+#   perm: "none"           # Guide tree permutation: none, abc, acb, bca (default: none)
+#   perturb: 0             # Perturbation seed: 0, 1, 2... (default: 0)
+
+# For a generic command-line aligner template, you can specify the tool and its command-line arguments as follows:
+# alignment_tool: "generic"
+# alignment_tool_path: "/path/to/your-aligner"
+# alignment_tool_config:
+#   input_flag: "-i"          # or the input switch your aligner uses
+#   output_flag: "-o"         # or the output switch your aligner uses
+#   threads_flag: "-t"        # or the thread switch your aligner uses
+#   extra_args:
+#     some-option: value
+
+
+
+# Exemple with command_template using muscle:
+# alignment_tool: "generic"
+# alignment_tool_path: "/home/t_hamitouche/anaconda3/envs/plastburstalign/bin/muscle"
+# alignment_tool_config:
+#   input_flag: "-super5"          # or the input switch your aligner uses
+#   output_flag: "-output"         # or the output switch your aligner uses
+#   extra_args:
+#       perm: "abc"         
+#       perturb: 0 
+
+
+# Exemple with command_template using muscle: 
+# alignment_tool: "generic"
+# alignment_tool_path: "/home/t_hamitouche/anaconda3/envs/plastburstalign/bin/muscle"
+# alignment_tool_config:
+#   input_flag: "-super5"
+#   output_flag: "-output"
+#   extra_args:
+#     - "-perm"
+#     - "abc"
+#     - "-perturb"
+#     - 0
+
+
+# Exemple with command_template using t_coffee:
+# alignment_tool: "generic"
+# alignment_tool_path: "/home/t_hamitouche/anaconda3/envs/plastburstalign/bin/t_coffee"
+# alignment_tool_config:
+#   input_flag: "-infile"          # or the input switch your aligner uses
+#   output_flag: "-outfile"         # or the output switch your aligner uses
+         

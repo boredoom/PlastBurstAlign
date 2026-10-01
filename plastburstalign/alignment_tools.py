@@ -4,10 +4,11 @@ Supports multiple alignment tools (MAFFT, Clustal Omega, etc.)
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from .logging_ops import logger as log
 
@@ -28,8 +29,8 @@ class AlignmentTool(ABC):
         """
         self.user_params = user_params or {}
         self.exec_path = None
-        # self.num_threads = self._set_num_threads(user_params)
-        self.num_threads = "1"  # For debugging, set to 1 to avoid multiprocessing issues"
+        self.num_threads = self._set_num_threads(user_params)
+        # self.num_threads = "1"  # For debugging, set to 1 to avoid multiprocessing issues"
         self.tool_params = self._get_tool_params(user_params)
         
         if tool_path:
@@ -322,6 +323,137 @@ class MUSCLE(AlignmentTool):
             return False
 
 
+class GenericAlignmentTool(AlignmentTool):
+    """Generic command-line alignment tool wrapper."""
+
+    def _find_tool(self):
+        """Search for the tool name in system PATH if a path was not provided."""
+        tool_name = self.user_params.get("alignment_tool")
+        if tool_name and shutil.which(tool_name):
+            self.exec_path = shutil.which(tool_name)
+            log.info(f"  found {tool_name} in system PATH")
+        else:
+            log.info(f"  {tool_name} not found in system PATH")
+
+    def _format_extra_args(self) -> str:
+        """Convert configured extra args into a shell-safe string for templates."""
+        extra_args = self.tool_params.get("extra_args")
+        if isinstance(extra_args, list):
+            return " ".join(str(arg) for arg in extra_args)
+        if isinstance(extra_args, dict):
+            parts: List[str] = []
+            for key, value in extra_args.items():
+                flag = str(key)
+                if not flag.startswith("-"):
+                    flag = f"-{flag}"
+                parts.append(flag)
+                if value is not None:
+                    parts.append(str(value))
+            return " ".join(parts)
+        return ""
+
+    def _append_extra_args(self, cmd: List[str]) -> List[str]:
+        """Append user-configured extra arguments to the command."""
+        extra_args = self.tool_params.get("extra_args")
+        if isinstance(extra_args, list):
+            cmd.extend([str(arg) for arg in extra_args])
+        elif isinstance(extra_args, dict):
+            for key, value in extra_args.items():
+                flag = str(key)
+                if not flag.startswith("-"):
+                    flag = f"-{flag}"
+                cmd.append(flag)
+                if value is not None:
+                    cmd.append(str(value))
+        return cmd
+
+    def _build_command(self, input_file: str, output_file: str) -> List[str]:
+        """Build the command line for a generic tool based on configuration."""
+        # cmd_template = self.tool_params.get("command_template")
+        # if cmd_template:
+        #     if isinstance(cmd_template, str):
+        #         uses_extra_placeholder = "{extra_args}" in cmd_template
+        #         formatted = cmd_template.format(
+        #             tool=self.exec_path,
+        #             input=input_file,
+        #             output=output_file,
+        #             extra_args=self._format_extra_args(),
+        #         )
+        #         cmd = shlex.split(formatted)
+        #         if not uses_extra_placeholder:
+        #             cmd = self._append_extra_args(cmd)
+        #         print(f"  generic alignment command: {' '.join(cmd)}")
+        #         return cmd
+        #     elif isinstance(cmd_template, list):
+        #         uses_extra_placeholder = any("{extra_args}" in str(item) for item in cmd_template)
+        #         cmd = [
+        #             str(item).format(
+        #                 tool=self.exec_path,
+        #                 input=input_file,
+        #                 output=output_file,
+        #                 extra_args=self._format_extra_args(),
+        #             )
+        #             for item in cmd_template
+        #         ]
+        #         if not uses_extra_placeholder:
+        #             cmd = self._append_extra_args(cmd)
+        #         print(f"  generic alignment command: {' '.join(cmd)}")
+        #         return cmd
+
+        cmd = [self.exec_path]
+        input_flag = self.tool_params.get("input_flag")
+        output_flag = self.tool_params.get("output_flag")
+        threads_flag = self.tool_params.get("threads_flag")
+        if input_flag:
+            cmd.extend([input_flag, input_file])
+        else:
+            cmd.append(input_file)
+        if output_flag:
+            cmd.extend([output_flag, output_file])
+        else:
+            cmd.append(output_file)
+        if threads_flag and self.num_threads:
+            cmd.extend([threads_flag, self.num_threads])
+
+        cmd = self._append_extra_args(cmd)
+        print(f"  generic alignment command: {' '.join(cmd)}")
+        return cmd
+
+    def align(self, input_file: str, output_file: str) -> bool:
+        """
+        Perform alignment using a generic external aligner.
+
+        Args:
+            input_file: Path to input sequence file
+            output_file: Path to output alignment file
+
+        Returns:
+            True if alignment succeeded, False otherwise
+        """
+        if not self._validate_input(input_file, output_file):
+            return False
+
+        try:
+            cmd = self._build_command(input_file, output_file)
+            log.debug(f"  running generic aligner with command: {' '.join(cmd)}")
+            process = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            if process.returncode == 0:
+                log.info(f"     successfully aligned {os.path.basename(input_file)} using {self.exec_path}")
+                return True
+            else:
+                log.error(f"  generic aligner failed with return code {process.returncode}")
+                return False
+        except Exception as e:
+            log.error(f"  error during generic alignment: {e}")
+            return False
+
+
 def get_alignment_tool(tool_name: str, user_params: Optional[Dict[str, Any]] = None,
                        tool_path: Optional[str] = None) -> Optional[AlignmentTool]:
     """
@@ -347,7 +479,8 @@ def get_alignment_tool(tool_name: str, user_params: Optional[Dict[str, Any]] = N
         return ClustalOmega(user_params, tool_path)
     elif tool_name == "muscle":
         return MUSCLE(user_params, tool_path)
+    elif tool_name == "generic":
+        return GenericAlignmentTool(user_params, tool_path)
     else:
-        log.error(f"unknown alignment tool: {tool_name}")
-        log.info("supported tools: mafft, clustal, muscle")
-        return None
+        log.warning(f"unknown alignment tool: {tool_name}; attempting generic wrapper")
+        return GenericAlignmentTool(user_params, tool_path)

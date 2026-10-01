@@ -82,7 +82,8 @@ class AlignmentCoordination:
         """
         log.info("saving individual regions as unaligned nucleotide matrices")
         
-        num_workers = self.user_params.get("num_threads")
+        # num_workers = self.user_params.get("num_threads")
+        num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
         mp_context = multiprocessing.get_context()  # same on all platforms
         
         # Prepare arguments for each region
@@ -146,7 +147,8 @@ class AlignmentCoordination:
         ### Inner Function - End ###
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment
-        num_workers = self.user_params.get("num_threads")
+        # num_workers = self.user_params.get("num_threads")
+        num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
         if self.plastid_data.nucleotides.items():
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 future_to_alignment = {
@@ -210,7 +212,8 @@ class AlignmentCoordination:
         ### Inner Function - End ###
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation
-        num_workers = self.user_params.get("num_threads")
+        # num_workers = self.user_params.get("num_threads")
+        num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_alignment = {
                 executor.submit(single_prot_MSA, feat_name): feat_name
@@ -240,7 +243,10 @@ class AlignmentCoordination:
         )
         msa_lists = split_list(list(self.plastid_data.nucleotides.keys()), self.user_params.get("num_threads") * 2)
         # Use ThreadPoolExecutor for I/O-bound file conversions
-        with ThreadPoolExecutor(max_workers=self.user_params.get("num_threads")) as executor:
+        # num_workers = self.user_params.get("num_threads")
+        num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_success = [
                 executor.submit(self.convert_MSAs, msa_list)
                 for msa_list in msa_lists

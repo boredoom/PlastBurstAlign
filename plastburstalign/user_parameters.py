@@ -36,7 +36,7 @@ class UserParameters(Dict[str, Any]):
             verbose: bool = False,
             order: str = "seq",
             concat: bool = False,
-            alignment_tool: str = "mafft",
+            alignment_tool: str = "muscle",
             alignment_tool_path: Optional[str] = None,
             alignment_tool_config: Optional[Dict[str, Any]] = None,
             config_file: Optional[str] = None
@@ -97,9 +97,15 @@ class UserParameters(Dict[str, Any]):
         self["in_dir"] = in_dir
 
     def _set_out_dir(self, out_dir: str):
-        if not os.path.exists(out_dir) or not isinstance(out_dir, str):
-            log.critical(f"Output directory `{out_dir}` does not exist.")
-            raise FileNotFoundError
+        if not isinstance(out_dir, str):
+            log.critical(f"Output directory `{out_dir}` is not a valid path string.")
+            raise TypeError
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+            log.info(f"Created output directory `{out_dir}`.")
+        elif not os.path.isdir(out_dir):
+            log.critical(f"Output path `{out_dir}` exists but is not a directory.")
+            raise NotADirectoryError
         self["out_dir"] = out_dir
 
     def _set_fileext(self, fileext: str):
