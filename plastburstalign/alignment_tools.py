@@ -29,7 +29,7 @@ class AlignmentTool(ABC):
         """
         self.user_params = user_params or {}
         self.exec_path = None
-        self.num_threads = self._set_num_threads(user_params)
+        # self.num_threads = self._set_num_threads(user_params)
         # self.num_threads = "1"  # For debugging, set to 1 to avoid multiprocessing issues"
         self.tool_params = self._get_tool_params(user_params)
         
@@ -88,7 +88,8 @@ class AlignmentTool(ABC):
         """Log the tool configuration."""
         tool_name = self.__class__.__name__
         if self.exec_path == "mafft":
-            log.info(f"configured {tool_name} with {self.num_threads} threads")
+            # log.info(f"configured {tool_name} with {self.num_threads} threads")
+            log.info(f"configured {tool_name}")
         elif self.exec_path == "clustalo" or self.exec_path == "muscle":
             log.info(f"configured {tool_name}")
         else:
@@ -152,7 +153,7 @@ class MAFFT(AlignmentTool):
                 cmd.extend(["--maxiterate", str(maxiterate_num)])
             
             # Add thread option
-            cmd.extend(["--thread", self.num_threads])
+            # cmd.extend(["--thread", self.num_threads])
             
             # Add other MAFFT options
             if self.tool_params.get("adjustdirection", True):
@@ -412,8 +413,8 @@ class GenericAlignmentTool(AlignmentTool):
             cmd.extend([output_flag, output_file])
         else:
             cmd.append(output_file)
-        if threads_flag and self.num_threads:
-            cmd.extend([threads_flag, self.num_threads])
+        # if threads_flag and self.num_threads:
+        #     cmd.extend([threads_flag, self.num_threads])
 
         cmd = self._append_extra_args(cmd)
         print(f"  generic alignment command: {' '.join(cmd)}")
