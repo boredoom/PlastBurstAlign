@@ -26,7 +26,7 @@ class PlastBurstAlign:
 
     def execute(self):
         """
-        Extracts all genes, introns, or intergenic spacers from a set of plastid genomes in GenBank flatfile format,
+        Extracts CDS, introns, intergenic spacers, or tRNAs and rRNAs from plastid genomes in GenBank flatfile format,
         aligns the corresponding regions, and then saves the alignments.
         """
         extractor = ExtractAndCollect(self.plastid_data, self.user_params)

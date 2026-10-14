@@ -16,6 +16,7 @@ class SelectMode(str, Enum):
     CDS = "cds"
     INT = "int"
     IGS = "igs"
+    RNA = "rna"
 
     def collects_proteins(self):
         return self == type(self).CDS
@@ -39,7 +40,9 @@ class UserParameters(Dict[str, Any]):
             alignment_tool: str = "muscle",
             alignment_tool_path: Optional[str] = None,
             alignment_tool_config: Optional[Dict[str, Any]] = None,
-            config_file: Optional[str] = None
+            config_file: Optional[str] = None,
+            include_trna: bool = True,
+            include_rrna: bool = True
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -48,9 +51,9 @@ class UserParameters(Dict[str, Any]):
         Args:
             in_dir: Path to input directory (which contains the GenBank files)
             out_dir: Path to output directory
-            select_mode: Type of regions to be extracted (i.e. `cds`, `int`, or `igs`)
+            select_mode: Type of regions to be extracted (`cds`, `int`, `igs`, or `rna`)
             fileext: File extension of input files
-            exclude_fullcds: List of genes to be excluded (CDS as well as INT/IGS that involve these genes)
+            exclude_fullcds: List of genes to be excluded (CDS, RNA, and INT/IGS involving these genes)
             exclude_region: List of regions to be excluded (specific regions by name).
                 Using the parameter will lead to an exception for select mode `cds` as
                 `exclude_fullcds` should be used for that purpose.
@@ -64,9 +67,12 @@ class UserParameters(Dict[str, Any]):
             alignment_tool_path: Path to the alignment tool executable
             alignment_tool_config: Dictionary of tool-specific parameters
             config_file: Path to a YAML config file containing parameters
+            include_trna: Extract and align tRNAs in RNA mode (default True).
+            include_rrna: Extract and align rRNAs in RNA mode (default True).
         """
         super().__init__()
         self._set_select_mode(select_mode)
+        self._set_rna_options(include_trna, include_rrna)
         self._set_in_dir(in_dir)
         self._set_out_dir(out_dir)
         self._set_fileext(fileext)
@@ -95,6 +101,16 @@ class UserParameters(Dict[str, Any]):
             log.critical(f"Input directory `{in_dir}` does not exist.")
             raise FileNotFoundError
         self["in_dir"] = in_dir
+
+    def _set_rna_options(self, include_trna: bool, include_rrna: bool):
+        self._test_type("include_trna", include_trna, bool)
+        self._test_type("include_rrna", include_rrna, bool)
+        if self["select_mode"] == "rna" and not (include_trna or include_rrna):
+            message = "RNA mode requires at least one of include_trna or include_rrna to be enabled"
+            log.critical(message)
+            raise ValueError(message)
+        self["include_trna"] = include_trna
+        self["include_rrna"] = include_rrna
 
     def _set_out_dir(self, out_dir: str):
         if not isinstance(out_dir, str):
@@ -219,6 +235,8 @@ class UserParametersScript(UserParameters):
         "inpd": "in_dir",
         "outd": "out_dir",
         "selectmode": "select_mode",
+        "include_trna": "include_trna",
+        "include_rrna": "include_rrna",
         "fileext": "fileext",
         "exclcds": "exclude_fullcds",
         "exclreg": "exclude_region",
@@ -308,7 +326,21 @@ class UserParametersScript(UserParameters):
             "-s",
             type=str,
             required=False,
-            help="(Optional) Type of regions to be extracted (i.e. `cds`, `int`, or `igs`)",
+            help="(Optional) Type of regions to be extracted (`cds`, `int`, `igs`, or `rna` for tRNAs and rRNAs)",
+        )
+        parser.add_argument(
+            "--trna",
+            dest="include_trna",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Enable/disable tRNA extraction and alignment in RNA mode (default: enabled)",
+        )
+        parser.add_argument(
+            "--rrna",
+            dest="include_rrna",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Enable/disable rRNA extraction and alignment in RNA mode (default: enabled)",
         )
         parser.add_argument(
             "--fileext",
@@ -323,7 +355,7 @@ class UserParametersScript(UserParameters):
             type=str,
             nargs="+",
             required=False,
-            help="(Optional) List of genes to be excluded (CDS as well as INT/IGS that involve these genes)",
+            help="(Optional) List of genes to be excluded (CDS, RNA, and INT/IGS involving these genes)",
         )
         parser.add_argument(
             "--exclreg",

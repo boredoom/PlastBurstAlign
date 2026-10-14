@@ -27,13 +27,16 @@ class ExtractAndCollect:
             plastid_data: Contains the locations of the files to be parsed,
                 and where the extracted records will be stored.
             user_params: Specifications for how the extraction should be performed.
-                These are `num_threads`, `out_dir`, `verbose`, and `exclude_fullcds`.
+                These are `num_threads`, `out_dir`, `verbose`, `exclude_fullcds`,
+                `include_trna`, and `include_rrna`.
         """
         self.plastid_data = plastid_data
         self.num_threads = user_params.get("num_threads")
         self.out_dir = user_params.get("out_dir")
         self.verbose = user_params.get("verbose")
         self.exclude_cds = user_params.get("exclude_fullcds")
+        self.include_trna = user_params.get("include_trna", True)
+        self.include_rrna = user_params.get("include_rrna", True)
         self._set_extract_fun()
 
     def _set_extract_fun(self):
@@ -43,6 +46,8 @@ class ExtractAndCollect:
             self._extract_fun = self._extract_igs
         elif self.plastid_data.mode == "int":
             self._extract_fun = self._extract_int
+        elif self.plastid_data.mode == "rna":
+            self._extract_fun = self._extract_rna
         else:
             log.critical("Undefined extraction mode")
             raise ValueError
@@ -87,7 +92,7 @@ class ExtractAndCollect:
             log.critical(f"No items in main dictionary: {self.out_dir}")
             raise Exception()
 
-    def _extract_recs(self, files: List[str]) -> Tuple[PlastidDict, PlastidDict]:
+    def _extract_recs(self, files: List[str]) -> Tuple[PlastidDict, Optional[PlastidDict]]:
         def extract_rec(file: str):
             try:
                 log.info(f" parsing {os.path.basename(file)}")
@@ -125,6 +130,17 @@ class ExtractAndCollect:
             # Step 2. Translate nucleotide sequence to protein and add to dictionary
             protein = ProteinFeature(gene=gene)
             protein_dict.add_feature(protein)
+
+    def _extract_rna(self, rec: SeqRecord, nuc_dict: PlastidDict):
+        """
+        Extracts annotated tRNA and rRNA sequences without reading-frame checks or translation.
+        """
+        for feature in RecordFeatures(rec, self.exclude_cds).rna_feats:
+            if (
+                (feature.type == "tRNA" and self.include_trna)
+                or (feature.type == "rRNA" and self.include_rrna)
+            ):
+                nuc_dict.add_feature(PlastidFeature(rec, feature))
 
     def _extract_igs(self, rec: SeqRecord, nuc_dict: PlastidDict):
         """
@@ -190,6 +206,15 @@ class RecordFeatures:
         """
         for f in self._features:
             if f.type == "CDS" and self._not_exclude(f):
+                yield f
+
+    @property
+    def rna_feats(self) -> Generator[SeqFeature, None, None]:
+        """
+        A generator of tRNA and rRNA features in the record.
+        """
+        for f in self._features:
+            if f.type in ("tRNA", "rRNA") and self._not_exclude(f):
                 yield f
 
     @property

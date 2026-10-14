@@ -24,6 +24,7 @@ The software `plastburstalign` addresses these and other challenges: it provides
   - genes (cds)
   - introns (int)
   - intergenic spacers (igs)
+  - tRNAs and rRNAs (rna; nucleotide-only alignment)
 - Support for multiple alignment tools:
   - MAFFT
   - MUSCLE
@@ -37,7 +38,7 @@ The software `plastburstalign` addresses these and other challenges: it provides
   - regions that do not fulfill a minimum, user-specified sequence length
   - regions that do not fulfill a minimum, user-specified number of taxa of the dataset that the region must be found in [see `DataCleaning` for both]
   - any user-specified genome region (i.e., gene, intron, or intergenic spacer)
--  Automatic determination if DNA sequence alignment based on amino acid (for genes) or nucleotide (for introns and intergenic spacers) sequence information 
+-  Automatic determination if DNA sequence alignment based on amino acid (for CDS) or nucleotide (for introns, intergenic spacers, tRNAs, and rRNAs) sequence information
 - Parallelized processing for faster extraction and alignment across multiple CPUs
 
 ### Additional features
@@ -105,7 +106,9 @@ plastburstalign \
 |--------|-------------|---------|
 | `-i` | Input dataset directory | `Input_dataset` |
 | `-o` | Output directory | `Output_dataset` |
-| `-s` | Sequence type to extract (e.g., cds, int, igs) | `cds` |
+| `-s` | Sequence type to extract (`cds`, `int`, `igs`, or `rna`) | `cds` |
+| `--trna` / `--no-trna` | Enable/disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
+| `--rrna` / `--no-rrna` | Enable/disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
 | `-a` | Alignment tool to use | `mafft` |
 | `-l` | Minimum sequence length (bp); regions shorter than this are excluded| `9` |
 | `-t` | Minimum number of taxa (int) or relative frequency (0<value<=1) in which a region must be present to be extracted | `0.1` |
@@ -113,6 +116,39 @@ plastburstalign \
 | `--config` | Path to YAML config file containing parameters | `config.yaml` |
 
 ---
+
+### Extracting tRNAs and rRNAs
+
+Use `-s rna` (or `select_mode: "rna"` in a YAML configuration) to extract annotated
+`tRNA` and `rRNA` features and align them directly as DNA nucleotide sequences:
+
+```bash
+plastburstalign -i Input_dataset -o Output_RNA -s rna -a mafft
+```
+
+Both RNA types are enabled by default. Select only one type with:
+
+```bash
+# tRNAs only
+plastburstalign -i Input_dataset -o Output_tRNA -s rna --trna --no-rrna -a mafft
+# rRNAs only
+plastburstalign -i Input_dataset -o Output_rRNA -s rna --no-trna --rrna -a mafft
+```
+
+The equivalent YAML and Python API parameters are `include_trna` and `include_rrna`
+(booleans, both defaulting to `true`). Explicit CLI switches override YAML values;
+omitted switches leave YAML values unchanged. Disabling both types in `rna` mode
+is an error. These switches do not affect `cds`, `int`, or `igs` mode.
+
+RNA mode does not translate sequences, require start/stop codons, or trim sequences
+to a multiple of three. It extracts all annotated parts in strand-correct order;
+for joined features, the exons are concatenated and intervening introns are omitted.
+Features must have a `gene` qualifier, as in the other modes. Gene-name normalization
+(including tRNA names), removal of duplicate copies per genome, minimum sequence
+length and taxon thresholds, ordering, and optional concatenation all apply.
+Both `--exclcds` (gene exclusions) and `--exclreg` (region exclusions) can exclude RNA
+genes by their normalized names. Output uses the existing `nucl_` FASTA and NEXUS
+formats, with no protein files. The `cds`, `int`, and `igs` modes are unchanged.
 
 ### Source usage
 If you cloned the repository:

@@ -5,8 +5,12 @@
 in_dir: "./benchmarking/Asteraceae_dataset"
 out_dir: "./benchmarking/Asteraceae_out"
 
-# Selection mode: cds, int, or igs
+# Selection mode: cds, int, igs, or rna (tRNAs and rRNAs; nucleotide-only alignment)
 select_mode: "igs"
+
+# RNA mode only: independently enable tRNAs and rRNAs
+include_trna: true
+include_rrna: true
 
 # File extension for input files
 fileext: ".gb"

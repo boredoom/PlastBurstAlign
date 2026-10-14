@@ -35,6 +35,18 @@ mv $folder_CDS/*.aligned.fasta $folder_CDS/02_aligned/fasta
 mv $folder_CDS/*.aligned.nexus $folder_CDS/02_aligned/nexus
 ```
 
+##### Extract and align tRNAs and rRNAs
+```bash
+python -m plastburstalign -i . -o ./output_RNA -s rna -a mafft
+```
+
+This mode aligns annotated tRNA and rRNA sequences directly as nucleotides,
+without translation or reading-frame checks. Joined feature parts are concatenated,
+excluding intervening introns. Existing filtering and concatenation options apply.
+Both RNA types are enabled by default. Add `--no-rrna` for tRNAs only or
+`--no-trna` for rRNAs only. Use `--trna` or `--rrna` to explicitly enable a type
+disabled in the YAML configuration. At least one type must remain enabled.
+
 ##### Extract and align introns
 ```bash
 folder_INT=./output_INT
