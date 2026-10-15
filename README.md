@@ -104,16 +104,16 @@ plastburstalign \
 
 | Option | Description | Example |
 |--------|-------------|---------|
-| `-i` | Input dataset directory | `Input_dataset` |
-| `-o` | Output directory | `Output_dataset` |
-| `-s` | Sequence type to extract (`cds`, `int`, `igs`, or `rna`) | `cds` |
-| `--trna` / `--no-trna` | Enable/disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
-| `--rrna` / `--no-rrna` | Enable/disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
-| `-a` | Alignment tool to use | `mafft` |
-| `-l` | Minimum sequence length (bp); regions shorter than this are excluded| `9` |
-| `-t` | Minimum number of taxa (int) or relative frequency (0<value<=1) in which a region must be present to be extracted | `0.1` |
-| `-n` | Number of threads to use| `8` |
-| `--config` | Path to YAML config file containing parameters | `config.yaml` |
+| `-i` | Input dataset directory | `-i Input_dataset` |
+| `-o` | Output directory | `-o Output_dataset` |
+| `-s` | Sequence type to extract (`cds`, `int`, `igs`, or `rna`) | `-s cds` |
+| `--no-trna` | Enable/disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
+| `--no-rrna` | Enable/disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
+| `-a` | Alignment tool to use | `-a mafft` |
+| `-l` | Minimum sequence length (bp); regions shorter than this are excluded| `-l 9` |
+| `-t` | Minimum number of taxa (int) or relative frequency (0<value<=1) in which a region must be present to be extracted | `-t 0.1` |
+| `-n` | Number of threads to use| `-n 8` |
+| `--config` | Path to YAML config file containing parameters | `--config config.yaml` |
 
 ---
 

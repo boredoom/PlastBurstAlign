@@ -329,18 +329,18 @@ class UserParametersScript(UserParameters):
             help="(Optional) Type of regions to be extracted (`cds`, `int`, `igs`, or `rna` for tRNAs and rRNAs)",
         )
         parser.add_argument(
-            "--trna",
+            "--no-trna",
             dest="include_trna",
-            action=argparse.BooleanOptionalAction,
+            action='store_false',
             default=None,
-            help="Enable/disable tRNA extraction and alignment in RNA mode (default: enabled)",
+            help="Disable tRNA extraction and alignment in RNA mode (default: enabled)",
         )
         parser.add_argument(
-            "--rrna",
+            "--no-rrna",
             dest="include_rrna",
-            action=argparse.BooleanOptionalAction,
+            action='store_false',
             default=None,
-            help="Enable/disable rRNA extraction and alignment in RNA mode (default: enabled)",
+            help="Disable rRNA extraction and alignment in RNA mode (default: enabled)",
         )
         parser.add_argument(
             "--fileext",
