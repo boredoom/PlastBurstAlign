@@ -130,9 +130,9 @@ Both RNA types are enabled by default. Select only one type with:
 
 ```bash
 # tRNAs only
-plastburstalign -i Input_dataset -o Output_tRNA -s rna --trna --no-rrna -a mafft
+plastburstalign -i Input_dataset -o Output_tRNA -s rna --no-rrna -a mafft
 # rRNAs only
-plastburstalign -i Input_dataset -o Output_rRNA -s rna --no-trna --rrna -a mafft
+plastburstalign -i Input_dataset -o Output_rRNA -s rna --no-trna -a mafft
 ```
 
 The equivalent YAML and Python API parameters are `include_trna` and `include_rrna`
