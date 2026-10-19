@@ -107,8 +107,8 @@ plastburstalign \
 | `-i` | Input dataset directory | `-i Input_dataset` |
 | `-o` | Output directory | `-o Output_dataset` |
 | `-s` | Sequence type to extract (`cds`, `int`, `igs`, or `rna`) | `-s cds` |
-| `--no-trna` | Enable/disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
-| `--no-rrna` | Enable/disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
+| `--no-trna` | Disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
+| `--no-rrna` | Disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
 | `-a` | Alignment tool to use | `-a mafft` |
 | `-l` | Minimum sequence length (bp); regions shorter than this are excluded| `-l 9` |
 | `-t` | Minimum number of taxa (int) or relative frequency (0<value<=1) in which a region must be present to be extracted | `-t 0.1` |
