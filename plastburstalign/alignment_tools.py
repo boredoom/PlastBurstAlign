@@ -59,14 +59,6 @@ class AlignmentTool(ABC):
         """
         pass
 
-    def _set_num_threads(self, user_params: Optional[Dict[str, Any]]) -> str:
-        """Extract number of threads from user parameters."""
-        if user_params and isinstance(user_params, dict):
-            num_threads = user_params.get("num_threads", "1")
-            if isinstance(num_threads, str) and num_threads.lower() == "auto":
-                return "1"
-            return str(num_threads)
-        return "1"
 
     def _get_tool_params(self, user_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Extract tool-specific parameters from user parameters."""
@@ -87,13 +79,11 @@ class AlignmentTool(ABC):
     def _log_configuration(self):
         """Log the tool configuration."""
         tool_name = self.__class__.__name__
-        if self.exec_path == "mafft":
-            # log.info(f"configured {tool_name} with {self.num_threads} threads")
-            log.info(f"configured {tool_name}")
-        elif self.exec_path == "clustalo" or self.exec_path == "muscle":
-            log.info(f"configured {tool_name}")
+        if self.exec_path :
+            log.info(f"configured {tool_name} with executable: {self.exec_path}")
         else:
-            log.warning(f" failed to configure {tool_name}")
+            log.error(f" failed to configure {tool_name}")
+            
 
     def _validate_input(self, input_file: str, output_file: str) -> bool:
         """Validate input and output files."""
@@ -153,8 +143,9 @@ class MAFFT(AlignmentTool):
                 cmd.extend(["--maxiterate", str(maxiterate_num)])
             
             # Add thread option
-            # cmd.extend(["--thread", self.num_threads])
-            
+            mafft_threads = self.tool_params.get("threads", 1)
+            cmd.extend(["--thread", str(mafft_threads)])
+
             # Add other MAFFT options
             if self.tool_params.get("adjustdirection", True):
                 cmd.append("--adjustdirection")
@@ -174,7 +165,7 @@ class MAFFT(AlignmentTool):
                     check=False
                 )
             if process.returncode == 0:
-                log.info(f"     successfully aligned {os.path.basename(input_file)} using MAFFT")
+                log.info(f"     successfully aligned {os.path.basename(input_file)} using MAFFT with {mafft_threads} threads")
                 return True
             else:
                 log.error(f"  MAFFT failed with return code {process.returncode}")
@@ -223,7 +214,8 @@ class ClustalOmega(AlignmentTool):
             outfmt = self.tool_params.get("outfmt", "fasta")
             cmd.extend(["--outfmt", outfmt])
             
-
+            clustalo_threads = self.tool_params.get("threads", 1)
+            cmd.extend(["--thread", str(clustalo_threads)])
             
             if self.tool_params.get("dealign"):
                 cmd.append("--dealign")
@@ -242,7 +234,7 @@ class ClustalOmega(AlignmentTool):
                 check=False
             )
             if process.returncode == 0:
-                log.info(f"     successfully aligned {os.path.basename(input_file)} using Clustal Omega")
+                log.info(f"     successfully aligned {os.path.basename(input_file)} using Clustal Omega with {clustalo_threads} threads")
                 return True
             else:
                 log.error(f"  Clustal Omega failed with return code {process.returncode}")
@@ -404,7 +396,6 @@ class GenericAlignmentTool(AlignmentTool):
         cmd = [self.exec_path]
         input_flag = self.tool_params.get("input_flag")
         output_flag = self.tool_params.get("output_flag")
-        threads_flag = self.tool_params.get("threads_flag")
         if input_flag:
             cmd.extend([input_flag, input_file])
         else:
@@ -413,8 +404,6 @@ class GenericAlignmentTool(AlignmentTool):
             cmd.extend([output_flag, output_file])
         else:
             cmd.append(output_file)
-        # if threads_flag and self.num_threads:
-        #     cmd.extend([threads_flag, self.num_threads])
 
         cmd = self._append_extra_args(cmd)
         print(f"  generic alignment command: {' '.join(cmd)}")

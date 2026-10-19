@@ -23,7 +23,7 @@ exclude_fullcds:
 min_seq_length: 9
 
 # Minimum number of taxa
-min_num_taxa: 3
+min_num_taxa: 2
 
 # Number of threads (or 'auto')
 num_threads: "auto"
@@ -37,30 +37,35 @@ order: "seq"
 # Enable concatenation
 concat: false
 
+#------------------------------------------------------------------------------------------------------------------------------
 
 # Path to alignment tool executable (optional)
 
 # For mafft:
 # alignment_tool: "mafft"
-# alignment_tool_path: "/path/to/mafft"
-# alignment_tool_config:
+# # alignment_tool_path: "/path/to/mafft"
 #   # MAFFT options
+#   threads: 4 # Number of threads (or "auto")
 #   algorithm: "auto"  # Options: auto, localpair, globalpair, genafpair, retree, maxiterate
 #   adjustdirection: true
 #   quiet: false
-  # retree: 1
-  # maxiterate: 0
+#   retree: 1
+#   maxiterate: 0
 
-# Example configurations for different tools:
+#------------------------------------------------------------------------------------------------------------------------------
+
 
 # For Clustal Omega:
 # alignment_tool: "clustal"
-# alignment_tool_path: "/path/to/clustalo"
+# # alignment_tool_path: "/path/to/clustalo"
 # alignment_tool_config:
 #   iterations: 0  # HMM iterations (0 = default)
+#   threads: 4 # Number of threads 
 #   outfmt: "fasta"  # Output format: fasta, clustal, msf, phylip, selex, vienna
-#   verbose: false
+#   verbose: false,
 #   dealign: false 
+
+#------------------------------------------------------------------------------------------------------------------------------
 
 # For MUSCLE:
 # alignment_tool: "muscle"
@@ -68,6 +73,9 @@ concat: false
 # alignment_tool_config:
 #   perm: "none"           # Guide tree permutation: none, abc, acb, bca (default: none)
 #   perturb: 0             # Perturbation seed: 0, 1, 2... (default: 0)
+
+
+#------------------------------------------------------------------------------------------------------------------------------
 
 # For a generic command-line aligner template, you can specify the tool and its command-line arguments as follows:
 # alignment_tool: "generic"
@@ -79,11 +87,12 @@ concat: false
 #   extra_args:
 #     some-option: value
 
+#----------------------------------------Exemples for generic command-line aligner--------------------------------------------------------
 
 
 # Exemple with command_template using muscle:
 # alignment_tool: "generic"
-# alignment_tool_path: "/home/t_hamitouche/anaconda3/envs/plastburstalign/bin/muscle"
+# alignment_tool_path: "/bin/muscle"
 # alignment_tool_config:
 #   input_flag: "-super5"          # or the input switch your aligner uses
 #   output_flag: "-output"         # or the output switch your aligner uses
@@ -105,10 +114,25 @@ concat: false
 #     - 0
 
 
-# Exemple with command_template using t_coffee:
+# Exemple with command_template using clustalo:
 # alignment_tool: "generic"
-# alignment_tool_path: "/home/t_hamitouche/anaconda3/envs/plastburstalign/bin/t_coffee"
+# alignment_tool_path: "/home/t_hamitouche/anaconda3/envs/plastburstalign/bin/clustalo"
 # alignment_tool_config:
 #   input_flag: "-infile"          # or the input switch your aligner uses
 #   output_flag: "-outfile"         # or the output switch your aligner uses
-         
+#   extra_args:
+#     - "--threads"
+#     - 4
+#     - "--outfmt"
+#     - "fasta"
+#     - "--dealign"
+
+
+# Exemple with command_template using t_coffee:
+# alignment_tool: "generic"
+# alignment_tool_path: "path to/t_coffee"
+# alignment_tool_config:
+#   input_flag: "-infile"          # or the input switch your aligner uses
+#   output_flag: "-outfile"         # or the output switch your aligner uses
+
+

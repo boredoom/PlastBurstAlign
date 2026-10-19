@@ -32,7 +32,7 @@ class UserParameters(Dict[str, Any]):
             exclude_fullcds: Optional[List[str]] = None,
             exclude_region: Optional[List[str]] = None,
             min_seq_length: int = 3,
-            min_num_taxa: Union[int, float] = 0.1,
+            min_num_taxa: Union[int, float] = 1,
             num_threads: Union[str, int] = "auto",
             verbose: bool = False,
             order: str = "seq",
