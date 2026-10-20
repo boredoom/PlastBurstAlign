@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# USAGE: python benchmarking_INT.py benchmark_YangEtAl2022_Asteraceae 5
+# Example usage: python benchmarking_INT.py benchmark_YangEtAl2022_Asteraceae 5
 
 import argparse
 import glob
@@ -51,6 +51,13 @@ def _resolve_dataset(dataset: str, script_dir: Path) -> Path:
 
 
 def main() -> None:
+    if len(sys.argv) < 3 and not any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print(
+            "Example usage: python benchmarking_INT.py "
+            "benchmark_YangEtAl2022_Asteraceae 5",
+            file=sys.stderr,
+        )
+
     parser = argparse.ArgumentParser(
         description="Download (if needed) and benchmark PlastBurstAlign in intron mode."
     )
