@@ -1,76 +1,132 @@
-### Exemplary usage
+### Example usage
 
-#### Installing the package locally
+#### Install from a local checkout
+
+From the repository root, install the package and its Python dependencies into
+the active environment:
+
 ```bash
-
-python -m build
-
-pip install .
-# "pip install ." builds the package in the current folder 
-# (using setup.py or pyproject.toml) and installs it into 
-# the active Python environment.
-
-# "pip install . --user" installs the package into the 
-# user-specific site-packages (not system-wide, not a venv).
+python -m pip install .
 ```
 
-#### Unpacking benchmark dataset
-```bash
-cd benchmarking
-tar xzf benchmarking1.tar.gz
-cd benchmarking1
+PlastBurstAlign also requires an external alignment program. Install MAFFT,
+MUSCLE, or Clustal Omega separately and make its executable available on `PATH`,
+or provide its path with `--alignmenttoolpath`.
+
+#### Prepare input data
+
+Put the input plastid genome GenBank flatfiles in a directory. The default
+extension is `.gb`; use `--fileext` (or `-f`) if your files use another
+extension. For example:
+
+```text
+Input_dataset/
+  genome_1.gb
+  genome_2.gb
 ```
 
-##### Extract and align coding regions
+#### Run from the command line
+
+The installed command and `python -m plastburstalign` accept the same options.
+This example extracts coding regions and aligns them with MAFFT:
+
 ```bash
-folder_CDS=./output_CDS
-mkdir -p $folder_CDS
-mkdir -p $folder_CDS/01_unalign
-mkdir -p $folder_CDS/02_aligned
-mkdir -p $folder_CDS/02_aligned/fasta
-mkdir -p $folder_CDS/02_aligned/nexus
-python -m plastburstalign -i . -o $folder_CDS -s cds 1>${folder_CDS}/${folder_CDS}.log 2>&1
-mv $folder_CDS/*.unalign.fasta $folder_CDS/01_unalign
-mv $folder_CDS/*.aligned.fasta $folder_CDS/02_aligned/fasta
-mv $folder_CDS/*.aligned.nexus $folder_CDS/02_aligned/nexus
+plastburstalign -i Input_dataset -o Output_CDS -s cds -a mafft
 ```
 
-##### Extract and align tRNAs and rRNAs
+The output directory is created if it does not exist. The main selection modes
+are:
+
+| Mode | Regions |
+|------|---------|
+| `cds` | Coding sequences |
+| `int` | Introns |
+| `igs` | Intergenic spacers |
+| `rna` | Annotated tRNAs and rRNAs, aligned as nucleotides |
+
+Use a separate output directory for each run if you want to keep its results
+separate. For example, to align tRNAs and rRNAs:
+
 ```bash
-python -m plastburstalign -i . -o ./output_RNA -s rna -a mafft
+plastburstalign -i Input_dataset -o Output_RNA -s rna -a mafft
 ```
 
-This mode aligns annotated tRNA and rRNA sequences directly as nucleotides,
-without translation or reading-frame checks. Joined feature parts are concatenated,
-excluding intervening introns. Existing filtering and concatenation options apply.
-Both RNA types are enabled by default. Add `--no-rrna` for tRNAs only or
-`--no-trna` for rRNAs only. Use `--trna` or `--rrna` to explicitly enable a type
-disabled in the YAML configuration. At least one type must remain enabled.
+RNA mode includes both types by default. Add `--no-rrna` for tRNAs only or
+`--no-trna` for rRNAs only. At least one type must remain enabled. RNA features
+are aligned directly as nucleotide sequences; joined feature parts are
+concatenated in strand-correct order, omitting intervening introns.
 
-##### Extract and align introns
+Common options include:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `-i`, `--inpd` | Input directory containing GenBank files | `-i Input_dataset` |
+| `-o`, `--outd` | Output directory | `-o Output_CDS` |
+| `-s`, `--selectmode` | Region type: `cds`, `int`, `igs`, or `rna` | `-s igs` |
+| `-a`, `--alignmenttool` | Alignment program: `mafft`, `muscle`, or `clustal` | `-a mafft` |
+| `--alignmenttoolpath` | Path to the alignment executable when it is not on `PATH` | `--alignmenttoolpath /path/to/mafft` |
+| `-f`, `--fileext` | Input file extension (default: `.gb`) | `-f .gbk` |
+| `-l`, `--minseqlength` | Minimum region length in base pairs | `-l 9` |
+| `-t`, `--minnumtaxa` | Minimum number of taxa, or a relative frequency from 0 to 1 | `-t 0.1` |
+| `-n`, `--numthreads` | Number of CPUs to use, or `auto` | `-n 8` |
+| `-c`, `--concat` | Also write a concatenation of successful alignments | `-c` |
+| `--config` | Path to a YAML configuration file | `--config config.yaml` |
+| `--no-trna` | Exclude tRNAs in RNA mode | `--no-trna` |
+| `--no-rrna` | Exclude rRNAs in RNA mode | `--no-rrna` |
+
+Run `plastburstalign --help` for the full list of command-line options. YAML
+configuration keys use the parameter names shown in `config.yaml`, such as
+`in_dir`, `out_dir`, `select_mode`, and `alignment_tool`.
+
+#### Output files
+
+Unaligned nucleotide FASTA files are written directly to the output directory.
+For coding regions, unaligned protein FASTA files and intermediate protein
+alignments are also written there. Aligned nucleotide FASTA files are placed in
+`fasta/`, and their NEXUS conversions are placed in `nexus/`. With `--concat`,
+the concatenated FASTA and NEXUS files are written directly to the output
+directory. PlastBurstAlign creates these output folders as needed; there is no
+need to create or move them manually.
+
+#### Run the benchmarking script
+
+The repository includes [`benchmarking/test_script.py`](../benchmarking/test_script.py)
+to run PlastBurstAlign once on a dataset with a chosen thread count and selection
+mode. First, place or unpack the GenBank dataset in a directory under
+`benchmarking/` (for example, `benchmarking/benchmarking1/`). From the
+repository root, run:
+
 ```bash
-folder_INT=./output_INT
-mkdir -p $folder_INT
-mkdir -p $folder_INT/01_unalign
-mkdir -p $folder_INT/02_aligned
-mkdir -p $folder_INT/02_aligned/fasta
-mkdir -p $folder_INT/02_aligned/nexus
-python -m plastburstalign -i . -o $folder_INT -s int 1>${folder_INT}/${folder_INT}.log 2>&1
-mv $folder_INT/*.unalign.fasta $folder_INT/01_unalign
-mv $folder_INT/*.aligned.fasta $folder_INT/02_aligned/fasta
-mv $folder_INT/*.aligned.nexus $folder_INT/02_aligned/nexus
+python benchmarking/test_script.py benchmarking1 8 cds
 ```
 
-##### Extract and align intergenic spacers
-```bash
-folder_IGS=./output_IGS
-mkdir -p $folder_IGS
-mkdir -p $folder_IGS/01_unalign
-mkdir -p $folder_IGS/02_aligned
-mkdir -p $folder_IGS/02_aligned/fasta
-mkdir -p $folder_IGS/02_aligned/nexus
-python -m plastburstalign -i . -o $folder_IGS -s igs 1>${folder_IGS}/${folder_IGS}.log 2>&1
-mv $folder_IGS/*.unalign.fasta $folder_IGS/01_unalign
-mv $folder_IGS/*.aligned.fasta $folder_IGS/02_aligned/fasta
-mv $folder_IGS/*.aligned.nexus $folder_IGS/02_aligned/nexus
+The positional arguments are the dataset directory, number of CPUs, and
+selection mode (`cds`, `int`, `igs`, or `rna`), in that order. A relative
+dataset path is resolved from the `benchmarking/` directory; an absolute path
+can also be supplied. The script runs `python -m plastburstalign` and writes
+results under `benchmarking/` in a directory named
+`<dataset-name>_output_<mode>_<threads>threads` under `benchmarking/`. For
+example, the command above writes to
+`benchmarking/benchmarking1_output_cds_8threads/`.
+
+Install the package dependencies and an external alignment program before
+running the benchmark. The script imports Python's `resource` module, so run it
+on Linux or macOS (or in a compatible Unix-like environment such as WSL); it
+does not run as-is on native Windows Python.
+
+#### Python API
+
+The package can also be run from Python by supplying a `UserParameters`
+instance:
+
+```python
+from plastburstalign import PlastBurstAlign, UserParameters
+
+params = UserParameters(
+    in_dir="Input_dataset",
+    out_dir="Output_CDS",
+    select_mode="cds",
+    alignment_tool="mafft",
+)
+PlastBurstAlign(params).execute()
 ```
