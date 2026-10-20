@@ -102,6 +102,22 @@ plastburstalign \
 ### Detailed examples
 See [this document](https://github.com/michaelgruenstaeudl/PlastBurstAlign/blob/main/docs/exemplary_usage.md)
 
+### Benchmarking
+```bash
+cd benchmarking
+# CDS
+python benchmarking_CDS.py benchmark_YangEtAl2022_Asteraceae 5
+# INT
+python benchmarking_INT.py benchmark_YangEtAl2022_Asteraceae 5
+# IGS
+python benchmarking_IGS.py benchmark_YangEtAl2022_Asteraceae 5
+```
+- Dataset `benchmark_ZhangNNEtAl2025_53angiosperms`: the same dataset (angiosperms; n=53) as used in [Zhang N.-N. et al. 2025](https://doi.org/10.1016/j.pld.2025.05.005)
+- Dataset `benchmark_YangEtAl2022_Asteraceae.tar.gz`: all Asteraceae (n=155) listed in [Yang et al. 2022](https://www.frontiersin.org/journals/plant-science/articles/10.3389/fpls.2022.808156)
+- Dataset `benchmark_YangEtAl2022_monocots`: all monocots (n=733) listed in [Yang et al. 2022](https://www.frontiersin.org/journals/plant-science/articles/10.3389/fpls.2022.808156)
+- Dataset `benchmark_YangEtAl2022_angiosperms`: all angiosperms (n=2585) listed in [Yang et al. 2022](https://www.frontiersin.org/journals/plant-science/articles/10.3389/fpls.2022.808156)
+- Dataset `benchmark_ZhangNNEtAl2025_13724angiosperms`: the same dataset (angiosperms; n=13724 instead of n=13731) as used in [Zhang N.-N. et al. 2025](https://doi.org/10.1016/j.pld.2025.05.005) but not including records AC_000188, NC_029253, NC_029254, NC_029331, NC_029333, NC_071962, and NC_085618, which have been removed by NCBI from NCBI RefSeq as a result of standard genome annotation processing.
+
 ---
 
 ### Parameters overview

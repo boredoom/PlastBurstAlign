@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# USAGE: python benchmarking_CDS.py benchmark_YangEtAl2022_Asteraceae 5
+
 import argparse
 import glob
 import os
