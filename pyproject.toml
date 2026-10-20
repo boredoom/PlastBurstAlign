@@ -10,7 +10,7 @@ authors = [
     {name = "Thanina Hamitouche", email = "t_hamitouche@mail.fhsu.edu"},
     {name = "Michael Gruenstaeudl, PhD", email = "m_gruenstaeudl@fhsu.edu"}
 ]
-version = "1.1"
+version = "1.2"
 
 requires-python = ">=3.11"
 dependencies = [
@@ -40,7 +40,6 @@ keywords = [
     "flatfile",
     "plastid genome",
 ]
-
 
 [tool.setuptools.packages.find]
 where = ["."]
