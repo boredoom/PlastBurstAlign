@@ -12,7 +12,7 @@ from Bio.SeqRecord import SeqRecord
 
 from plastburstalign.extraction_ops import DataCleaning, ExtractAndCollect, RecordFeatures
 from plastburstalign.plast_burst_align import PlastBurstAlign
-from plastburstalign.seqfeature_ops import PlastidData
+from plastburstalign.seqfeature_ops import GeneNameCleaner, PlastidData
 from plastburstalign.user_parameters import SelectMode, UserParameters, UserParametersScript
 
 
@@ -104,6 +104,30 @@ class RNAModeTests(unittest.TestCase):
             record.seq[20:24] + record.seq[28:32],
         )
         self.assertEqual(data.nucleotides["rrn16"][0].id, "rrn16_taxon1")
+
+    def test_rrna_names_are_standardized_to_canonical_gene_names(self):
+        cleaner = GeneNameCleaner()
+        for annotation, expected in (
+            ("16S rRNA", "rrn16"),
+            ("rrn16S", "rrn16"),
+            ("23S ribosomal RNA", "rrn23"),
+            ("rrn23", "rrn23"),
+            ("4.5S rRNA", "rrn4.5"),
+            ("rrn4.5", "rrn4.5"),
+            ("5S ribosomal RNA", "rrn5"),
+            ("rrn5S", "rrn5"),
+        ):
+            with self.subTest(annotation=annotation):
+                feature = SeqFeature(
+                    FeatureLocation(0, 1),
+                    type="rRNA",
+                    qualifiers={"gene": [annotation]},
+                )
+                self.assertEqual(cleaner.get_safe_gene(feature), expected)
+
+    def test_trna_name_cleaning_remains_separate(self):
+        cleaner = GeneNameCleaner()
+        self.assertEqual(cleaner.clean_trna_gene("trnH-gug"), "trnH_GUG")
 
     def test_rna_toggles_select_independent_types(self):
         for trna, rrna, expected in (

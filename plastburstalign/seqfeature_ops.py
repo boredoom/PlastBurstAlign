@@ -178,11 +178,35 @@ class IntergenicDict(PlastidDict):
 
 
 class GeneNameCleaner:
+    _rrna_gene_names = {
+        "16s": "rrn16",
+        "16srrna": "rrn16",
+        "16sribosomalrna": "rrn16",
+        "rrn16": "rrn16",
+        "rrn16s": "rrn16",
+        "23s": "rrn23",
+        "23srrna": "rrn23",
+        "23sribosomalrna": "rrn23",
+        "rrn23": "rrn23",
+        "rrn23s": "rrn23",
+        "4.5s": "rrn4.5",
+        "4.5srrna": "rrn4.5",
+        "4.5sribosomalrna": "rrn4.5",
+        "rrn4.5": "rrn4.5",
+        "rrn4.5s": "rrn4.5",
+        "5s": "rrn5",
+        "5srrna": "rrn5",
+        "5sribosomalrna": "rrn5",
+        "rrn5": "rrn5",
+        "rrn5s": "rrn5",
+    }
+
     def __init__(self, table_id: int = 11):
         """
         Extracts gene names from `SeqFeature` objects and standardizes gene names.
-        For tRNA this includes using amino acid abbreviations and a specified codon table
-        to add anticodon information.
+        tRNA names use amino acid abbreviations and a specified codon table to add
+        anticodon information. The four plastid rRNA names are standardized to
+        `rrn16`, `rrn23`, `rrn4.5`, and `rrn5`.
         The default codon table used is INSDC table 11.
 
         Args:
@@ -216,9 +240,11 @@ class GeneNameCleaner:
         """
         return feat.qualifiers["gene"][0] if feat.qualifiers.get("gene") else None
 
-    def clean_gene(self, gene: Optional[str], cut_trna: bool = False) -> Optional[str]:
+    def clean_trna_gene(
+        self, gene: Optional[str], cut_trna: bool = False
+    ) -> Optional[str]:
         """
-        Standardizes a gene name by case and delimiter usage.
+        Standardizes a tRNA gene name by case, delimiter usage, and anticodon.
         If there is no initial gene name (`None`), `None` will be returned.
 
         Args:
@@ -268,6 +294,20 @@ class GeneNameCleaner:
             cleaned_gene += "_" + anticodon
         return cleaned_gene
 
+    def clean_rrna_gene(self, gene: Optional[str]) -> Optional[str]:
+        """Standardizes recognized plastid rRNA names to their canonical gene names."""
+        if not gene:
+            return None
+        normalized_gene = sub(r"[^a-z0-9.]", "", gene.casefold())
+        canonical_name = self._rrna_gene_names.get(normalized_gene)
+        if canonical_name:
+            return canonical_name
+        return self.clean_gene(gene)
+
+    def clean_gene(self, gene: Optional[str], cut_trna: bool = False) -> Optional[str]:
+        """Standardizes a gene name using the legacy general/tRNA cleaning behavior."""
+        return self.clean_trna_gene(gene, cut_trna)
+
     def get_safe_gene(self, feat: SeqFeature) -> Optional[str]:
         """
         Finds and returns the cleaned gene name for a feature. If the feature is not a gene, `None` will be returned.
@@ -279,7 +319,16 @@ class GeneNameCleaner:
             Cleaned gene name.
 
         """
-        return self.clean_gene(self.get_gene(feat))
+        gene = self.get_gene(feat)
+        if feat.type == "tRNA":
+            return self.clean_trna_gene(gene)
+        if feat.type == "rRNA":
+            return self.clean_rrna_gene(gene)
+        if gene and gene.casefold().startswith("trn"):
+            return self.clean_trna_gene(gene)
+        if gene and sub(r"[^a-z0-9.]", "", gene.casefold()) in self._rrna_gene_names:
+            return self.clean_rrna_gene(gene)
+        return self.clean_gene(gene)
 
 
 # -----------------------------------------------------------------#
