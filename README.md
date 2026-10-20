@@ -99,6 +99,9 @@ plastburstalign \
   -a mafft
 ```
 
+### Detailed examples
+See [this document](https://github.com/michaelgruenstaeudl/PlastBurstAlign/blob/main/docs/exemplary_usage.md)
+
 ---
 
 ### Parameters overview
@@ -108,12 +111,12 @@ plastburstalign \
 | `-i` | Input dataset directory | `-i Input_dataset` |
 | `-o` | Output directory | `-o Output_dataset` |
 | `-s` | Sequence type to extract (`cds`, `int`, `igs`, or `rna`) | `-s cds` |
-| `--no-trna` | Disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
-| `--no-rrna` | Disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
 | `-a` | Alignment tool to use | `-a mafft` |
 | `-l` | Minimum sequence length (bp); regions shorter than this are excluded| `-l 9` |
 | `-t` | Minimum number of taxa (int) or relative frequency (0<value<=1) in which a region must be present to be extracted | `-t 0.1` |
 | `-n` | Number of threads to use| `-n 8` |
+| `--no-trna` | Disable tRNAs in `rna` mode (default: enabled) | `--no-trna` |
+| `--no-rrna` | Disable rRNAs in `rna` mode (default: enabled) | `--no-rrna` |
 | `--config` | Path to YAML config file containing parameters | `--config config.yaml` |
 
 ---
@@ -199,7 +202,3 @@ To ensure that only homologous genes are grouped together and aligned, `plastbur
 For rRNAs, recognized gene names and RNA-product labels are standardized to the canonical plastid gene names: 16S rRNA to `rrn16`, 23S rRNA to `rrn23`, 4.5S rRNA to `rrn4.5`, and 5S rRNA to `rrn5`.
 
 As a side effect, the automatic standardization of tRNA gene names also decreases the number of annotated genome regions that need to be removed from the dataset for not reaching the minimum number of taxa defined. Without the standardization, the intergenic spacer between the genes `trnA_CAA` and `ndhB`, for example, may be grouped under two different names (e.g., `trnA_CAA_ndhB` and `trnA_caa_ndhB`), with the latter group being less common and eventually removed from the dataset for not reaching the minimum number of taxa. By implementing a gene name standardization, the same intergenic spacer is grouped under only one name (i.e., `trnA_CAA_ndhB`) and not discarded. Preliminary tests indicated that the number of annotated genome regions that were removed due to not reaching the minimum number of taxa was decreased by approximately 25% through the tRNA gene name standardization.
-
-
-### Exemplary usage
-See [this document](https://github.com/michaelgruenstaeudl/PlastBurstAlign/blob/main/docs/exemplary_usage.md)
