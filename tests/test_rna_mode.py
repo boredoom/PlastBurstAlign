@@ -107,23 +107,34 @@ class RNAModeTests(unittest.TestCase):
 
     def test_rrna_names_are_standardized_to_canonical_gene_names(self):
         cleaner = GeneNameCleaner()
-        for annotation, expected in (
-            ("16S rRNA", "rrn16"),
-            ("rrn16S", "rrn16"),
-            ("23S ribosomal RNA", "rrn23"),
-            ("rrn23", "rrn23"),
-            ("4.5S rRNA", "rrn4.5"),
-            ("rrn4.5", "rrn4.5"),
-            ("5S ribosomal RNA", "rrn5"),
-            ("rrn5S", "rrn5"),
-        ):
-            with self.subTest(annotation=annotation):
-                feature = SeqFeature(
-                    FeatureLocation(0, 1),
-                    type="rRNA",
-                    qualifiers={"gene": [annotation]},
-                )
-                self.assertEqual(cleaner.get_safe_gene(feature), expected)
+        aliases = {
+            "rrn16": (
+                "rrn16", "rrn16S", "16S", "16S rRNA", "16S ribosomal RNA",
+                "rRNA16", "rRNA16S", "rns", "SSU", "SSU rRNA", "SSU rDNA",
+            ),
+            "rrn23": (
+                "rrn23", "rrn23S", "23S", "23S rRNA", "23S ribosomal RNA",
+                "rRNA23", "rRNA23S", "rnl", "LSU", "LSU rRNA", "LSU rDNA",
+            ),
+            "rrn4.5": (
+                "rrn4.5", "rrn4.5S", "4.5S", "4.5S rRNA",
+                "4.5S ribosomal RNA", "rRNA4.5", "rRNA4.5S",
+                "rrn4_5", "rrn4_5S",
+            ),
+            "rrn5": (
+                "rrn5", "rrn5S", "5S", "5S rRNA", "5S ribosomal RNA",
+                "rRNA5", "rRNA5S", "5S rDNA",
+            ),
+        }
+        for expected, annotations in aliases.items():
+            for annotation in annotations:
+                with self.subTest(annotation=annotation):
+                    feature = SeqFeature(
+                        FeatureLocation(0, 1),
+                        type="rRNA",
+                        qualifiers={"gene": [annotation]},
+                    )
+                    self.assertEqual(cleaner.get_safe_gene(feature), expected)
 
     def test_trna_name_cleaning_remains_separate(self):
         cleaner = GeneNameCleaner()
