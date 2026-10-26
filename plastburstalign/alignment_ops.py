@@ -1,31 +1,30 @@
-import copy
-import glob
+from __future__ import annotations
+
 import multiprocessing
 import os
 import re
-import shutil
-import subprocess
-import sys
-import tarfile
-import zipfile
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from collections.abc import Callable, Mapping
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from io import StringIO
-import time
-from typing import List, Callable, Tuple, Mapping, Optional, Dict, Any
-import requests
-from Bio import SeqIO, Nexus, AlignIO
-from Bio.SeqRecord import SeqRecord
+from typing import Any
+
+from Bio import AlignIO, SeqIO
 from Bio.Align import MultipleSeqAlignment
 from Bio.Data.CodonTable import ambiguous_generic_by_id
+from Bio.Nexus.Nexus import Nexus as NexusAlignment
 from Bio.Seq import Seq
-from .helpers import split_list, bounded_submit_iterator
-from .logging_ops import Logger, logger as log
-from .seqfeature_ops import PlastidData
+from Bio.SeqRecord import SeqRecord
+
 from .alignment_tools import get_alignment_tool
+from .helpers import bounded_submit_iterator, split_list
+from .logging_ops import logger as log
+from .nexus_ops import ConcatenationError, IncrementalNexusAccumulator
+from .seqfeature_ops import PlastidData
 
 # ===================================================================
 # Module-level helper functions for multiprocessing
 # ===================================================================
+
 
 def _save_region_unaligned(args: tuple) -> None:
     """
@@ -48,86 +47,9 @@ def _save_region_unaligned(args: tuple) -> None:
     except Exception as e:
         log.error(f"Error saving {feat_name}: {e}")
 
-class IncrementalNexusAccumulator:
-    """
-    Incrementally accumulates individual Nexus alignment matrices into a single
-    concatenated Nexus alignment. Produces output byte-equivalent to Nexus.Nexus.combine()
-    without holding all individual alignments in memory simultaneously.
-    """
-
-    def __init__(self) -> None:
-        self.combined: Optional[Nexus.Nexus.Nexus] = None
-
-    def add(self, name: str, m: Nexus.Nexus.Nexus) -> None:
-        if self.combined is None:
-            self.combined = copy.deepcopy(m)
-            self.combined.charlabels = None
-            self.combined.statelabels = None
-            self.combined.interleave = False
-            self.combined.translate = None
-
-            for cn, cs in list(self.combined.charsets.items()):
-                self.combined.charsets[f"{name}.{cn}"] = cs
-                del self.combined.charsets[cn]
-            for tn, ts in list(self.combined.taxsets.items()):
-                self.combined.taxsets[f"{name}.{tn}"] = ts
-                del self.combined.taxsets[tn]
-
-            self.combined.charpartitions = {"combined": {name: list(range(self.combined.nchar))}}
-            return
-
-        # Check for mixed datatypes across partitions
-        if self.combined.datatype != m.datatype:
-            self.combined.datatype = "None"
-
-        both = [t for t in self.combined.taxlabels if t in m.taxlabels]
-        combined_only = [t for t in self.combined.taxlabels if t not in both]
-        m_only = [t for t in m.taxlabels if t not in both]
-
-        for t in both:
-            self.combined.matrix[t] += Seq(
-                str(m.matrix[t])
-                .replace(m.gap, self.combined.gap)
-                .replace(m.missing, self.combined.missing)
-            )
-        for t in combined_only:
-            self.combined.matrix[t] += Seq(self.combined.missing * m.nchar)
-        for t in m_only:
-            self.combined.matrix[t] = Seq(self.combined.missing * self.combined.nchar) + Seq(
-                str(m.matrix[t])
-                .replace(m.gap, self.combined.gap)
-                .replace(m.missing, self.combined.missing)
-            )
-
-        self.combined.taxlabels.extend(m_only)
-        for cn, cs in m.charsets.items():
-            self.combined.charsets[f"{name}.{cn}"] = [x + self.combined.nchar for x in cs]
-        if m.taxsets:
-            if not self.combined.taxsets:
-                self.combined.taxsets = {}
-            self.combined.taxsets.update({f"{name}.{tn}": ts for tn, ts in m.taxsets.items()})
-
-        self.combined.charpartitions["combined"][name] = list(
-            range(self.combined.nchar, self.combined.nchar + m.nchar)
-        )
-        if m.charlabels:
-            if not self.combined.charlabels:
-                self.combined.charlabels = {}
-            self.combined.charlabels.update(
-                {self.combined.nchar + i: label for i, label in m.charlabels.items()}
-            )
-        self.combined.nchar += m.nchar
-        self.combined.ntax += len(m_only)
-
-    def finalize(self) -> Optional[Nexus.Nexus.Nexus]:
-        if self.combined is None:
-            return None
-        for c in self.combined.charpartitions["combined"]:
-            self.combined.charsets[c] = self.combined.charpartitions["combined"][c]
-        return self.combined
 
 class AlignmentCoordination:
-    def __init__(self, plastid_data: PlastidData, user_params: Dict[str, Any]):
+    def __init__(self, plastid_data: PlastidData, user_params: dict[str, Any]):
         """
         Coordinates the alignment of nucleotide or protein sequences.
 
@@ -151,7 +73,6 @@ class AlignmentCoordination:
             log.error("Failed to initialize alignment tool, falling back to MAFFT")
             self.aligner = get_alignment_tool("mafft", user_params, None)
 
-
     def save_unaligned(self):
         """
         For each region in the plastid data, an unaligned nucleotide matrix of sequences is saved to file.
@@ -168,7 +89,7 @@ class AlignmentCoordination:
         out_dir = self.user_params.get("out_dir")
 
         def _args_generator():
-            for feat_name in self.plastid_data.nucleotides.keys():
+            for feat_name in self.plastid_data.nucleotides:
                 nuc_data = self.plastid_data.nucleotides.get(feat_name)
                 prot_data = self.plastid_data.proteins.get(feat_name) if collect_proteins else None
                 yield (feat_name, nuc_data, prot_data, out_dir, collect_proteins)
@@ -215,7 +136,9 @@ class AlignmentCoordination:
         def single_nuc_MSA(k: str):
             log.debug(f" aligning {k}")
             # Define input and output names
-            out_fn_unalign_nucl = os.path.join(self.user_params.get("out_dir"), f"nucl_{k}.unalign.fasta")
+            out_fn_unalign_nucl = os.path.join(
+                self.user_params.get("out_dir"), f"nucl_{k}.unalign.fasta"
+            )
             fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
             os.makedirs(fasta_dir, exist_ok=True)
             out_fn_aligned_nucl = os.path.join(fasta_dir, f"nucl_{k}.aligned.fasta")
@@ -226,6 +149,7 @@ class AlignmentCoordination:
                 log.debug(f"Alignment successful for `{k}` -> {out_fn_aligned_nucl}")
             else:
                 log.warning(f"Alignment for `{k}` produced no output: {out_fn_aligned_nucl}")
+
         ### Inner Function - End ###
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment
@@ -235,15 +159,18 @@ class AlignmentCoordination:
             max_in_flight = num_workers * 2
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 for k, future in bounded_submit_iterator(
-                    executor, single_nuc_MSA, self.plastid_data.nucleotides.keys(), max_in_flight=max_in_flight
+                    executor,
+                    single_nuc_MSA,
+                    self.plastid_data.nucleotides.keys(),
+                    max_in_flight=max_in_flight,
                 ):
                     try:
                         future.result()
                     except Exception as e:
-                        log.error("%r generated an exception: %s" % (k, e))
+                        log.error(f"{k!r} generated an exception: {e}")
         else:
             log.critical("No items in nucleotide main dictionary to process")
-            raise Exception()
+            raise RuntimeError("No items in nucleotide main dictionary to process")
 
     def _prot_MSA(self):
         log.info(
@@ -255,9 +182,15 @@ class AlignmentCoordination:
         def single_prot_MSA(k: str):
             log.debug(f" aligning {k}")
             # Define input and output names
-            out_fn_unalign_prot = os.path.join(self.user_params.get("out_dir"), f"prot_{k}.unalign.fasta")
-            out_fn_aligned_prot = os.path.join(self.user_params.get("out_dir"), f"prot_{k}.aligned.fasta")
-            out_fn_unalign_nucl = os.path.join(self.user_params.get("out_dir"), f"nucl_{k}.unalign.fasta")
+            out_fn_unalign_prot = os.path.join(
+                self.user_params.get("out_dir"), f"prot_{k}.unalign.fasta"
+            )
+            out_fn_aligned_prot = os.path.join(
+                self.user_params.get("out_dir"), f"prot_{k}.aligned.fasta"
+            )
+            out_fn_unalign_nucl = os.path.join(
+                self.user_params.get("out_dir"), f"nucl_{k}.unalign.fasta"
+            )
             fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
             os.makedirs(fasta_dir, exist_ok=True)
             out_fn_aligned_nucl = os.path.join(fasta_dir, f"nucl_{k}.aligned.fasta")
@@ -267,28 +200,26 @@ class AlignmentCoordination:
             if os.path.exists(out_fn_aligned_prot) and os.path.getsize(out_fn_aligned_prot) > 0:
                 log.debug(f"Protein alignment successful for `{k}` -> {out_fn_aligned_prot}")
             else:
-                log.warning(f"Protein alignment for `{k}` produced no output: {out_fn_aligned_prot}")
+                log.warning(
+                    f"Protein alignment for `{k}` produced no output: {out_fn_aligned_prot}"
+                )
                 return
             # Step 2. Conduct actual back-translation from PROTEINS TO NUCLEOTIDES
             try:
                 translator = BackTranslation(
-                    k,
-                    out_fn_aligned_prot,
-                    out_fn_unalign_nucl,
-                    out_fn_aligned_nucl,
-                    11
+                    k, out_fn_aligned_prot, out_fn_unalign_nucl, out_fn_aligned_nucl, 11
                 )
                 translator.backtranslate()
                 # Report whether back-translation produced nucleotide alignment
                 if os.path.exists(out_fn_aligned_nucl) and os.path.getsize(out_fn_aligned_nucl) > 0:
                     log.debug(f"Back-translation successful for `{k}` -> {out_fn_aligned_nucl}")
                 else:
-                    log.warning(f"Back-translation produced no output for `{k}`: {out_fn_aligned_nucl}")
+                    log.warning(
+                        f"Back-translation produced no output for `{k}`: {out_fn_aligned_nucl}"
+                    )
             except Exception as err:
-                log.warning(
-                    f"Unable to conduct back-translation of `{k}`. "
-                    f"Error message: {err}."
-                )
+                log.warning(f"Unable to conduct back-translation of `{k}`. Error message: {err}.")
+
         ### Inner Function - End ###
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation with bounded queue
@@ -296,7 +227,10 @@ class AlignmentCoordination:
         max_in_flight = num_workers * 2
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for k, future in bounded_submit_iterator(
-                executor, single_prot_MSA, self.plastid_data.nucleotides.keys(), max_in_flight=max_in_flight
+                executor,
+                single_prot_MSA,
+                self.plastid_data.nucleotides.keys(),
+                max_in_flight=max_in_flight,
             ):
                 try:
                     future.result()
@@ -318,7 +252,9 @@ class AlignmentCoordination:
         log.info(
             f"converting all successful alignments to NEXUS format using {self.user_params.get('num_threads')} threads"
         )
-        msa_lists = split_list(list(self.plastid_data.nucleotides.keys()), self.user_params.get("num_threads") * 2)
+        msa_lists = split_list(
+            list(self.plastid_data.nucleotides.keys()), self.user_params.get("num_threads") * 2
+        )
         # Use ThreadPoolExecutor for I/O-bound file conversions
         num_workers = self.user_params.get("num_threads")
         # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
@@ -332,10 +268,10 @@ class AlignmentCoordination:
                 if len(success_list) > 0:
                     self.success_list.extend(success_list)
 
-
-    def convert_MSAs(self, msa_list: List[str]) -> List[Tuple[str, str]]:
+    def convert_MSAs(self, msa_list: list[str]) -> list[tuple[str, str]]:
         """Convert each region's aligned FASTA file to NEXUS format and collect successful conversions."""
-        def _convert_FASTA_to_NEXUS(msa_name: str) -> Optional[str]:
+
+        def _convert_FASTA_to_NEXUS(msa_name: str) -> str | None:
             fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
             aligned_nucl_fasta = os.path.join(fasta_dir, f"nucl_{msa_name}.aligned.fasta")
             nexus_dir = os.path.join(self.user_params.get("out_dir"), "nexus")
@@ -376,35 +312,34 @@ class AlignmentCoordination:
                 with ThreadPoolExecutor(max_workers=2) as write_pool:
                     fut_nexus = write_pool.submit(
                         alignm_concat.write_nexus_data,
-                        filename=out_fn_nucl_concat_nexus
+                        filename=out_fn_nucl_concat_nexus,
                     )
                     fut_fasta = write_pool.submit(
                         alignm_concat.export_fasta,
-                        filename=out_fn_nucl_concat_fasta
+                        filename=out_fn_nucl_concat_fasta,
                     )
                     fut_nexus.result()
                     fut_fasta.result()
             except Exception as e:
                 log.error(f"Writer thread failure while exporting alignments: {e}")
-                raise RuntimeError(f"Failure while writing concatenated alignments: {e}") from e
+                raise ConcatenationError(
+                    f"Failure while writing concatenated alignments: {e}"
+                ) from e
 
-        def _load_nexus_alignment(msa_name: str, nexus_path: str) -> Nexus.Nexus.Nexus:
-            # Load the Nexus alignment and rename sequence IDs for concatenation
+        def _load_nexus_alignment(msa_name: str, nexus_path: str) -> NexusAlignment:
             alignm_nexus = AlignIO.read(nexus_path, "nexus")
             hndl = StringIO()
             AlignIO.write(alignm_nexus, hndl, "nexus")
             nexus_string = hndl.getvalue()
 
-            gene_name_pattern = fr"\n(_R_)?{msa_name}_"
+            gene_name_pattern = rf"\n(_R_)?{msa_name}_"
             nexus_string = re.sub(gene_name_pattern, "\nconcat_", nexus_string)
-            return Nexus.Nexus.Nexus(nexus_string)
+            return NexusAlignment(nexus_string)
 
         log.info(f"concatenating all successful alignments in `{self.plastid_data.order}` order")
-        # Sort alignment paths according to user specification
         self.plastid_data.set_order_map()
         self.success_list.sort(key=lambda t: self.plastid_data.order_map[t[0]])
 
-        # Step 1. Define output filenames
         out_fn_nucl_concat_fasta = os.path.join(
             self.user_params.get("out_dir"), f"nucl_{num_successful}concat.aligned.fasta"
         )
@@ -412,7 +347,6 @@ class AlignmentCoordination:
             self.user_params.get("out_dir"), f"nucl_{num_successful}concat.aligned.nexus"
         )
 
-        # Step 2. Do staged incremental concatenation
         try:
             accumulator = IncrementalNexusAccumulator()
             for msa_name, nexus_path in self.success_list:
@@ -420,30 +354,30 @@ class AlignmentCoordination:
                 accumulator.add(msa_name, single_matrix)
             alignm_concat = accumulator.finalize()
         except Exception as e:
-            log.critical("Unable to concatenate alignments.\n" f"Error message: {e}")
-            raise Exception()
+            log.critical(f"Unable to concatenate alignments: {e}")
+            raise ConcatenationError(f"Alignment concatenation failed: {e}") from e
 
         if alignm_concat is None:
             log.warning("Concatenation produced empty output.")
             return
 
-        # Step 3. Write concatenated alignment to file
         log.info(" writing concatenation to file in NEXUS and FASTA formats")
         _concat_sync()
+
 
 # -----------------------------------------------------------------#
 
 
 class BackTranslation:
     def __init__(
-            self,
-            prot_name: str,
-            prot_align_file: str,
-            nuc_fasta_file: str,
-            nuc_align_file: str,
-            table: int = 0,
-            align_format: str = "fasta",
-            gap: str = "-"
+        self,
+        prot_name: str,
+        prot_align_file: str,
+        nuc_fasta_file: str,
+        nuc_align_file: str,
+        table: int = 0,
+        align_format: str = "fasta",
+        gap: str = "-",
     ):
         """
         Coordinate the back-translation of protein sequences to nucleotide sequences.
@@ -476,11 +410,13 @@ class BackTranslation:
 
         p = str(prot).upper().replace("*", "X")
         t = str(nuc.translate(self.table)).upper().replace("*", "X")
-        if len(t) == len(p) + 1:
-            if str(nuc)[-3:].upper() in ambiguous_generic_by_id[self.table].stop_codons:
-                # Allow this...
-                t = t[:-1]
-                nuc = nuc[:-3]  # edit return value
+        if (
+            len(t) == len(p) + 1
+            and str(nuc)[-3:].upper() in ambiguous_generic_by_id[self.table].stop_codons
+        ):
+            # Allow this...
+            t = t[:-1]
+            nuc = nuc[:-3]  # edit return value
         if len(t) != len(p):
             debug = (
                 f"Inconsistent lengths for {identifier}, ungapped protein {len(p)}, "
@@ -521,17 +457,17 @@ class BackTranslation:
                 for offset in range(0, len(p), 60):
                     log.debug(
                         f"translation mismatch for {identifier} [{offset}:{offset + 60}]\n"
-                        f"protein:     {p[offset:offset + 60]}\n"
-                        f"             {m[offset:offset + 60]}\n"
-                        f"translation: {t[offset:offset + 60]}\n"
+                        f"protein:     {p[offset : offset + 60]}\n"
+                        f"             {m[offset : offset + 60]}\n"
+                        f"translation: {t[offset : offset + 60]}\n"
                     )
             log.warning(f"translation check failed for {identifier}")
 
     def _backtrans_seq(
-            self,
-            identifier: str,
-            aligned_protein_record: SeqRecord,
-            unaligned_nucleotide_record: SeqRecord,
+        self,
+        identifier: str,
+        aligned_protein_record: SeqRecord,
+        unaligned_nucleotide_record: SeqRecord,
     ) -> SeqRecord:
         # Per https://biopython.org/docs/1.81/api/Bio.Seq.html,
         # `replace` is proper replacement for depreciated method `ungap`.
@@ -552,9 +488,7 @@ class BackTranslation:
                 f"tripled {len(ungapped_protein) * 3} vs "
                 f"ungapped nucleotide {len(ungapped_nucleotide)}"
             )
-            log.warning(
-                f"Backtranslation failed for {identifier} due to ungapped length mismatch"
-            )
+            log.warning(f"Backtranslation failed for {identifier} due to ungapped length mismatch")
         if ungapped_nucleotide is None:
             return None
 
@@ -572,29 +506,31 @@ class BackTranslation:
                 f"Nucleotide sequence for {unaligned_nucleotide_record.id} "
                 f"longer than protein {aligned_protein_record.id}"
             )
-            log.warning(
-                f"Backtranslation failed for {identifier} due to unaligned length mismatch"
-            )
+            log.warning(f"Backtranslation failed for {identifier} due to unaligned length mismatch")
             return None
 
         aligned_nuc = unaligned_nucleotide_record[:]  # copy for most annotation
         aligned_nuc.letter_annotation = {}  # clear this
-        aligned_nuc.seq = Seq("".join(seq))  # , alpha)  # Modification on 09-Sep-2022 by M. Gruenstaeudl
+        aligned_nuc.seq = Seq(
+            "".join(seq)
+        )  # , alpha)  # Modification on 09-Sep-2022 by M. Gruenstaeudl
         if len(aligned_protein_record.seq) * 3 != len(aligned_nuc):
             log.debug(
                 f"Nucleotide sequence for {aligned_nuc.id} is length {len(aligned_nuc)} "
                 f"but protein sequence {aligned_protein_record.seq} is length {len(aligned_protein_record.seq)} "
                 f"(3 * {len(aligned_nuc)} != {len(aligned_protein_record.seq)})"
             )
-            log.warning(
-                f"Backtranslation failed for {identifier} due to aligned length mismatch"
-            )
+            log.warning(f"Backtranslation failed for {identifier} due to aligned length mismatch")
             return None
 
         return aligned_nuc
 
-    def _backtrans_seqs(self, protein_alignment: MultipleSeqAlignment, nucleotide_records: Mapping,
-                        key_function: Callable[[str], str] = lambda x: x):
+    def _backtrans_seqs(
+        self,
+        protein_alignment: MultipleSeqAlignment,
+        nucleotide_records: Mapping,
+        key_function: Callable[[str], str] = lambda x: x,
+    ):
         """
         Thread nucleotide sequences onto a protein alignment.
         """
@@ -604,9 +540,7 @@ class BackTranslation:
             try:
                 nucleotide = nucleotide_records[key_function(protein.id)]
             except KeyError:
-                raise ValueError(
-                    f"Could not find nucleotide sequence for {identifier}"
-                )
+                raise ValueError(f"Could not find nucleotide sequence for {identifier}")
             sequence = self._backtrans_seq(identifier, protein, nucleotide)
             if sequence is not None:
                 aligned.append(sequence)

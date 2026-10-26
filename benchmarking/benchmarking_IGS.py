@@ -53,8 +53,7 @@ def _resolve_dataset(dataset: str, script_dir: Path) -> Path:
 def main() -> None:
     if len(sys.argv) < 3 and not any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print(
-            "Example usage: python benchmarking_IGS.py "
-            "benchmark_YangEtAl2022_Asteraceae 5",
+            "Example usage: python benchmarking_IGS.py " "benchmark_YangEtAl2022_Asteraceae 5",
             file=sys.stderr,
         )
 

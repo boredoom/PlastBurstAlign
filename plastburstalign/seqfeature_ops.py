@@ -40,7 +40,8 @@ class PlastidData:
 
     def _set_files(self, user_params: Dict[str, Any]):
         self.files = [
-            os.path.join(user_params.get("in_dir"), f) for f in os.listdir(user_params.get("in_dir"))
+            os.path.join(user_params.get("in_dir"), f)
+            for f in os.listdir(user_params.get("in_dir"))
             if f.endswith(user_params.get("fileext"))
         ]
         self.num_taxa = len(self.files)
@@ -49,14 +50,14 @@ class PlastidData:
         self.order = user_params.get("order")
 
     @staticmethod
-    def _add_plast_dict(pdict1: 'PlastidDict', pdict2: 'PlastidDict'):
+    def _add_plast_dict(pdict1: "PlastidDict", pdict2: "PlastidDict"):
         for feat_name in pdict2.keys():
             if feat_name in pdict1.keys():
                 pdict1[feat_name].extend(pdict2[feat_name])
             else:
                 pdict1[feat_name] = pdict2[feat_name]
 
-    def _add_igs_dict(self, pdict: 'IntergenicDict'):
+    def _add_igs_dict(self, pdict: "IntergenicDict"):
         self.nucleotides.feat_name_inv_map.update(pdict.feat_name_inv_map)
         for feat_name in pdict.keys():
             if feat_name in self.nucleotides.keys():
@@ -67,7 +68,7 @@ class PlastidData:
             else:
                 self.nucleotides[feat_name] = pdict[feat_name]
 
-    def add_nucleotides(self, pdict: 'PlastidDict'):
+    def add_nucleotides(self, pdict: "PlastidDict"):
         """
         Merges a dictionary of region annotations into the dictionary of nucleotide region annotations
         maintained by the data structure.
@@ -81,7 +82,7 @@ class PlastidData:
             self._add_plast_dict(self.nucleotides, pdict)
         self.nucleotides.plastome_feats.update(pdict.plastome_feats)
 
-    def add_proteins(self, pdict: 'PlastidDict'):
+    def add_proteins(self, pdict: "PlastidDict"):
         """
         Merges a dictionary of region annotations into the dictionary of protein region annotations
         maintained by the data structure. If the extraction mode does not include proteins, calling
@@ -102,9 +103,7 @@ class PlastidData:
         order_list = list(self.nucleotides.keys())
         if self.order == "alpha":
             order_list.sort()
-        self.order_map = {
-            nuc: index for index, nuc in enumerate(order_list)
-        }
+        self.order_map = {nuc: index for index, nuc in enumerate(order_list)}
 
     def remove_nuc(self, feat_name: str):
         """
@@ -137,7 +136,7 @@ class PlastidDict(OrderedDict):
     def _is_feat(self, feat_name: str) -> bool:
         return feat_name in self.keys()
 
-    def add_feature(self, feature: 'PlastidFeature'):
+    def add_feature(self, feature: "PlastidFeature"):
         """
         Adds an annotation to the dictionary. If an annotation with the same name has already been added
         for the plastome (record name), it will not be added.
@@ -169,7 +168,7 @@ class IntergenicDict(PlastidDict):
         super().__init__()
         self.feat_name_inv_map = {}
 
-    def add_feature(self, igs: 'IntergenicFeature'):
+    def add_feature(self, igs: "IntergenicFeature"):
         super().add_feature(igs)
         self.feat_name_inv_map[igs.feat_name] = igs.inv_feat_name
 
@@ -259,9 +258,7 @@ class GeneNameCleaner:
         """
         return feat.qualifiers["gene"][0] if feat.qualifiers.get("gene") else None
 
-    def clean_trna_gene(
-        self, gene: Optional[str], cut_trna: bool = False
-    ) -> Optional[str]:
+    def clean_trna_gene(self, gene: Optional[str], cut_trna: bool = False) -> Optional[str]:
         """
         Standardizes a tRNA gene name by case, delimiter usage, and anticodon.
         If there is no initial gene name (`None`), `None` will be returned.
@@ -282,16 +279,14 @@ class GeneNameCleaner:
         gene_sub = match(gene_pattern, gene)
         # if non-standard, just return a "safe" version of the name
         if not gene_sub:
-            return sub(
-                r"\W+", "_", gene.replace("-", "_")
-            )
+            return sub(r"\W+", "_", gene.replace("-", "_"))
         # the first match is the beginning of the cleaned name
         cleaned_gene = gene_sub.group()[0:3].lower() + gene_sub.group()[3:].upper()
         if cut_trna:
             return cleaned_gene
 
         # look for tRNA qualifiers
-        gene = gene[len(cleaned_gene):]
+        gene = gene[len(cleaned_gene) :]
         trna_pattern = r"([a-zA-Z]{3})"
         qual_subs = findall(trna_pattern, gene)
         # if not tRNA, return the gene
@@ -437,9 +432,7 @@ class PlastidFeature:
 
         """
         if self.seq_obj:
-            return SeqRecord(
-                self.seq_obj, id=self.seq_name, name="", description=""
-            )
+            return SeqRecord(self.seq_obj, id=self.seq_name, name="", description="")
         return None
 
 
@@ -476,7 +469,9 @@ class ProteinFeature(GeneFeature):
     _type = "protein"
     _default_exception = "potential reading frame error of this feature in input file"
 
-    def __init__(self, record: SeqRecord = None, feature: SeqFeature = None, gene: GeneFeature = None):
+    def __init__(
+        self, record: SeqRecord = None, feature: SeqFeature = None, gene: GeneFeature = None
+    ):
         """
         Primarily a wrapper for a protein `SeqRecord` that can be accessed by `get_record()`.
         It contains other variables and methods that document the creation of the `SeqRecord`.
@@ -536,13 +531,9 @@ class IntronFeature(PlastidFeature):
         in_order = exon_2.start >= exon_1.end
 
         if in_order:
-            self.feature.location = FeatureLocation(
-                exon_1.end, exon_2.start
-            )
+            self.feature.location = FeatureLocation(exon_1.end, exon_2.start)
         else:
-            self.feature.location = FeatureLocation(
-                exon_2.start, exon_1.end
-            )
+            self.feature.location = FeatureLocation(exon_2.start, exon_1.end)
 
 
 class IntergenicFeature(PlastidFeature):
@@ -570,10 +561,12 @@ class IntergenicFeature(PlastidFeature):
         # Note: It's unclear if +1 is needed here.
         self.start_pos = ExactPosition(current_feat.location.end)  # +1)
         self.end_pos = ExactPosition(self.subsequent_feat.location.start)
-        self.feature = FeatureLocation(self.start_pos, self.end_pos) if self.start_pos < self.end_pos else None
+        self.feature = (
+            FeatureLocation(self.start_pos, self.end_pos) if self.start_pos < self.end_pos else None
+        )
         self.default_exception = (
-                f"{IntergenicFeature._default_exception}"
-                f" (start pos: {self.start_pos}, end pos:{self.end_pos})"
+            f"{IntergenicFeature._default_exception}"
+            f" (start pos: {self.start_pos}, end pos:{self.end_pos})"
         )
 
     def _set_seq_obj(self, record: SeqRecord):

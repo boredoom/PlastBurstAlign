@@ -40,8 +40,7 @@ class BoundedTaskQueueTests(unittest.TestCase):
             self.assertEqual(empty_results, [])
 
             single_results = [
-                fut.result()
-                for _, fut in bounded_submit_iterator(executor, lambda x: x * 10, [42])
+                fut.result() for _, fut in bounded_submit_iterator(executor, lambda x: x * 10, [42])
             ]
             self.assertEqual(single_results, [420])
 

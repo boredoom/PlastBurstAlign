@@ -11,6 +11,7 @@ class Logger:
     """
     A singleton class used to contain the `Logger` object used for all modules in the package.
     """
+
     _logger = None
 
     def __new__(cls, verbose: bool = False):

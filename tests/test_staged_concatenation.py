@@ -1,7 +1,10 @@
 import io
 import unittest
-from Bio.Nexus.Nexus import Nexus as NexusAlignment, combine as nexus_combine
-from plastburstalign.alignment_ops import IncrementalNexusAccumulator
+
+from Bio.Nexus.Nexus import Nexus as NexusAlignment
+from Bio.Nexus.Nexus import combine as nexus_combine
+
+from plastburstalign.nexus_ops import ConcatenationError, IncrementalNexusAccumulator
 
 
 class StagedConcatenationTests(unittest.TestCase):
@@ -104,6 +107,58 @@ class StagedConcatenationTests(unittest.TestCase):
         res = acc.finalize()
         self.assertEqual(res.nchar, 4)
         self.assertEqual(str(res.matrix["concat_t1"]), "AAAA")
+
+    def test_concatenation_error_inheritance(self):
+        err = ConcatenationError("Test error")
+        self.assertIsInstance(err, RuntimeError)
+        self.assertEqual(str(err), "Test error")
+
+    def test_accumulator_empty_finalize_returns_none(self):
+        acc = IncrementalNexusAccumulator()
+        self.assertIsNone(acc.finalize())
+
+    def test_accumulator_datatype_mismatch_and_charlabels(self):
+        nex1_str = """#NEXUS
+BEGIN DATA;
+    DIMENSIONS NTAX=2 NCHAR=3;
+    FORMAT DATATYPE=DNA GAP=- MISSING=? MATCHCHAR=.;
+    MATRIX
+    TaxonA ATG
+    TaxonB ACG
+    ;
+END;"""
+        nex2_str = """#NEXUS
+BEGIN DATA;
+    DIMENSIONS NTAX=2 NCHAR=3;
+    FORMAT DATATYPE=PROTEIN GAP=- MISSING=? MATCHCHAR=.;
+    MATRIX
+    TaxonA MET
+    TaxonB THR
+    ;
+END;"""
+        n1 = NexusAlignment(nex1_str)
+        n1.charsets = {"codon1": [0, 1]}
+        n1.taxsets = {"ingroup": ["TaxonA"]}
+
+        n2 = NexusAlignment(nex2_str)
+        n2.charsets = {"site1": [0]}
+        n2.taxsets = {"outgroup": ["TaxonB"]}
+        n2.charlabels = {0: "lbl1", 1: "lbl2"}
+
+        acc = IncrementalNexusAccumulator()
+        acc.add("geneA", n1)
+        acc.add("geneB", n2)
+        res = acc.finalize()
+
+        self.assertIsNotNone(res)
+        assert res is not None
+        self.assertEqual(res.datatype, "None")
+        self.assertEqual(res.nchar, 6)
+        self.assertIn("geneA.codon1", res.charsets)
+        self.assertIn("geneB.site1", res.charsets)
+        self.assertEqual(res.charsets["geneB.site1"], [3])
+        self.assertIn("geneB.outgroup", res.taxsets)
+        self.assertEqual(res.charlabels[3], "lbl1")
 
 
 if __name__ == "__main__":

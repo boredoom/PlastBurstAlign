@@ -13,6 +13,7 @@ class SelectMode(str, Enum):
     """
     An enumeration class used to keep track of selection and alignment modes.
     """
+
     CDS = "cds"
     INT = "int"
     IGS = "igs"
@@ -24,25 +25,25 @@ class SelectMode(str, Enum):
 
 class UserParameters(Dict[str, Any]):
     def __init__(
-            self,
-            in_dir: str = "./input",
-            out_dir: str = "./output",
-            select_mode: str = "cds",
-            fileext: str = ".gb",
-            exclude_fullcds: Optional[List[str]] = None,
-            exclude_region: Optional[List[str]] = None,
-            min_seq_length: int = 3,
-            min_num_taxa: Union[int, float] = 1,
-            num_threads: Union[str, int] = "auto",
-            verbose: bool = False,
-            order: str = "seq",
-            concat: bool = False,
-            alignment_tool: str = "muscle",
-            alignment_tool_path: Optional[str] = None,
-            alignment_tool_config: Optional[Dict[str, Any]] = None,
-            config_file: Optional[str] = None,
-            include_trna: bool = True,
-            include_rrna: bool = True
+        self,
+        in_dir: str = "./input",
+        out_dir: str = "./output",
+        select_mode: str = "cds",
+        fileext: str = ".gb",
+        exclude_fullcds: Optional[List[str]] = None,
+        exclude_region: Optional[List[str]] = None,
+        min_seq_length: int = 3,
+        min_num_taxa: Union[int, float] = 1,
+        num_threads: Union[str, int] = "auto",
+        verbose: bool = False,
+        order: str = "seq",
+        concat: bool = False,
+        alignment_tool: str = "muscle",
+        alignment_tool_path: Optional[str] = None,
+        alignment_tool_config: Optional[Dict[str, Any]] = None,
+        config_file: Optional[str] = None,
+        include_trna: bool = True,
+        include_rrna: bool = True,
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -248,7 +249,7 @@ class UserParametersScript(UserParameters):
         "concat": "concat",
         "alignmenttool": "alignment_tool",
         "alignmenttoolpath": "alignment_tool_path",
-        "config": "config_file"
+        "config": "config_file",
     }
 
     def __init__(self):
@@ -260,7 +261,7 @@ class UserParametersScript(UserParameters):
 
         # Load config file if specified
         config_params = {}
-        if hasattr(args, 'config') and args.config:
+        if hasattr(args, "config") and args.config:
             config_params = self._load_config_file(args.config)
 
         # Merge command line args with config file, command line takes precedence
@@ -281,7 +282,7 @@ class UserParametersScript(UserParameters):
             Dictionary of parameters from config file
         """
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 config = yaml.safe_load(f)
             log.info(f"Loaded configuration from {config_path}")
             return config or {}
@@ -367,7 +368,7 @@ class UserParametersScript(UserParameters):
                 "(Optional) List of regions to be excluded (specific regions by name). "
                 "Using the argument will lead to an exception for select mode `cds` as "
                 "`exclcds` should be used for that purpose."
-            )
+            ),
         )
         parser.add_argument(
             "--minseqlength",
@@ -412,9 +413,8 @@ class UserParametersScript(UserParameters):
             "-c",
             action="store_true",
             required=False,
-            #help="(Optional) Enable sequential writing of alignment concatenation"
-            help="(Optional) Enable concatenation of individual alignments and writing of concatenation file to disk"
-
+            # help="(Optional) Enable sequential writing of alignment concatenation"
+            help="(Optional) Enable concatenation of individual alignments and writing of concatenation file to disk",
         )
         parser.add_argument(
             "--alignmenttool",
@@ -443,7 +443,5 @@ class UserParametersScript(UserParameters):
         # map the cmd argument names to class constructor parameters,
         # and remove empty argument values (`None`)
         args_dict = vars(args)
-        args_dict = {
-            cls._construct_name_map[k]: v for k, v in args_dict.items() if v is not None
-        }
+        args_dict = {cls._construct_name_map[k]: v for k, v in args_dict.items() if v is not None}
         return args_dict

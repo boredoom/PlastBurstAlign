@@ -1,5 +1,5 @@
 import bisect
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from typing import List, Tuple, Optional, Any, Dict, NamedTuple, Generator
 from Bio import SeqIO
@@ -10,9 +10,16 @@ import multiprocessing
 import os
 
 # Package imports
-from .seqfeature_ops import (PlastidData, PlastidDict, IntergenicDict,
-                             GeneFeature, ProteinFeature, IntergenicFeature,
-                             IntronFeature, PlastidFeature)
+from .seqfeature_ops import (
+    PlastidData,
+    PlastidDict,
+    IntergenicDict,
+    GeneFeature,
+    ProteinFeature,
+    IntergenicFeature,
+    IntronFeature,
+    PlastidFeature,
+)
 from .logging_ops import Logger, logger as log
 from .helpers import split_list, bounded_submit_iterator
 
@@ -113,7 +120,7 @@ class ExtractAndCollect:
         Logger.reinitialize_logger(self.verbose)
 
         # "bind" plastid dictionaries to the record extraction function
-        nuc_dict = IntergenicDict() if self.plastid_data.mode == 'igs' else PlastidDict()
+        nuc_dict = IntergenicDict() if self.plastid_data.mode == "igs" else PlastidDict()
         extract_fun = partial(self._extract_fun, nuc_dict=nuc_dict)
         if self.plastid_data.mode.collects_proteins():
             prot_dict = PlastidDict()
@@ -126,7 +133,9 @@ class ExtractAndCollect:
             extract_rec(f)
         return nuc_dict, prot_dict
 
-    def _extract_cds(self, rec: SeqRecord, nuc_dict: PlastidDict, protein_dict: Optional[PlastidDict] = None):
+    def _extract_cds(
+        self, rec: SeqRecord, nuc_dict: PlastidDict, protein_dict: Optional[PlastidDict] = None
+    ):
         """
         Extracts all CDS (coding sequences = genes) from a given sequence record
         """
@@ -157,9 +166,8 @@ class ExtractAndCollect:
         Extracts annotated tRNA and rRNA sequences without reading-frame checks or translation.
         """
         for feature in RecordFeatures(rec, self.exclude_cds).rna_feats:
-            if (
-                (feature.type == "tRNA" and self.include_trna)
-                or (feature.type == "rRNA" and self.include_rrna)
+            if (feature.type == "tRNA" and self.include_trna) or (
+                feature.type == "rRNA" and self.include_rrna
             ):
                 if len(feature.location) < self.min_seq_length:
                     continue
@@ -171,7 +179,9 @@ class ExtractAndCollect:
                 if feat.seq_obj is None:
                     nuc_dict.add_feature(feat)
                     continue
-                if len(feat.seq_obj) < self.min_seq_length or self._is_region_excluded(feat.feat_name):
+                if len(feat.seq_obj) < self.min_seq_length or self._is_region_excluded(
+                    feat.feat_name
+                ):
                     continue
 
                 nuc_dict.add_feature(feat)
@@ -221,10 +231,15 @@ class ExtractAndCollect:
         """
         Extracts all INT (introns) from a given sequence record
         """
+
         def _add_intron(feature_obj: SeqFeature, offset: int):
             exon_1 = feature_obj.location.parts[offset]
             exon_2 = feature_obj.location.parts[offset + 1]
-            intron_len = abs(int(exon_2.start) - int(exon_1.end)) if exon_2.start >= exon_1.end else abs(int(exon_1.start) - int(exon_2.end))
+            intron_len = (
+                abs(int(exon_2.start) - int(exon_1.end))
+                if exon_2.start >= exon_1.end
+                else abs(int(exon_1.start) - int(exon_2.end))
+            )
             if intron_len < self.min_seq_length:
                 return
 
@@ -237,7 +252,9 @@ class ExtractAndCollect:
             if intron.seq_obj is None:
                 nuc_dict.add_feature(intron)
                 return
-            if len(intron.seq_obj) < self.min_seq_length or self._is_region_excluded(intron.feat_name):
+            if len(intron.seq_obj) < self.min_seq_length or self._is_region_excluded(
+                intron.feat_name
+            ):
                 return
             nuc_dict.add_feature(intron)
 
@@ -293,9 +310,7 @@ class RecordFeatures:
         A generator of IGS features in the record.
         """
         # Note: No need to include "if feature.type=='tRNA'", because all tRNAs are also annotated as genes
-        features = [
-            f for f in self._features if f.type == "gene" and self._not_exclude(f)
-        ]
+        features = [f for f in self._features if f.type == "gene" and self._not_exclude(f)]
         # Handle spliced exons
         handler = ExonSpliceHandler(features, self.rec_name)
         handler.resolve()
@@ -357,6 +372,7 @@ class FeatureRearranger:
         A tuple that contains a `SeqFeature` as well as other variables
         to assist with manipulating the feature within a features list.
         """
+
         feature: Optional[SeqFeature] = None
         gene: Optional[str] = None
         is_trans: bool = False
@@ -379,9 +395,7 @@ class FeatureRearranger:
         self._is_sorted = False
 
     def _set_end_positions(self):
-        self._end_positions = [
-            f.location.end for f in self._features
-        ]
+        self._end_positions = [f.location.end for f in self._features]
 
     def _size(self) -> int:
         return len(self._features)
@@ -399,9 +413,7 @@ class FeatureRearranger:
 
     @staticmethod
     def _get_is_trans(feature: SeqFeature, gene: str) -> bool:
-        trans_genes = [
-            "rps12"
-        ]
+        trans_genes = ["rps12"]
         return bool(feature.qualifiers.get("trans_splicing")) or gene in trans_genes
 
     def _tuple_from_feature(self, feature: SeqFeature, index: Optional[int] = None) -> FeatureTuple:
@@ -409,13 +421,7 @@ class FeatureRearranger:
         is_trans = self._get_is_trans(feature, gene)
         is_compound = type(feature.location) is CompoundLocation
         index = self._get_insert_index(feature) if index is None else index
-        return self.FeatureTuple(
-            feature,
-            gene,
-            is_trans,
-            is_compound,
-            index
-        )
+        return self.FeatureTuple(feature, gene, is_trans, is_compound, index)
 
     def _tuple_from_index(self, index: int) -> FeatureTuple:
         if index < 0 or index >= len(self._features):
@@ -447,9 +453,7 @@ class FeatureRearranger:
             self._compound_features.extend(
                 f for f in self._features if type(f.location) is CompoundLocation
             )
-            self._features = [
-                f for f in self._features if f not in self._compound_features
-            ]
+            self._features = [f for f in self._features if f not in self._compound_features]
             self._compounds_removed = True
 
     def simple_features(self) -> Generator[FeatureTuple, None, None]:
@@ -549,7 +553,9 @@ class FeatureRearranger:
 
         subsequent = self.get_subsequent(current)
         subsequent_gene = "\t" if not subsequent.feature else subsequent.gene
-        subsequent_location = "\t\t\t\t\t" if not subsequent.feature else subsequent.feature.location
+        subsequent_location = (
+            "\t\t\t\t\t" if not subsequent.feature else subsequent.feature.location
+        )
 
         message_sub = "Merging exons of" if merge else "Repositioning"
         message = f"{message_sub} {current.gene} within {self.rec_name}"
@@ -610,7 +616,9 @@ class ExonSpliceMerger:
         current.feature.location = FeatureLocation(gene_start, gene_end)
 
     @staticmethod
-    def _merge_adj_exons(current: FeatureRearranger.FeatureTuple, subsequent: FeatureRearranger.FeatureTuple):
+    def _merge_adj_exons(
+        current: FeatureRearranger.FeatureTuple, subsequent: FeatureRearranger.FeatureTuple
+    ):
         gene_start = min(current.feature.location.start, subsequent.feature.location.start)
         gene_end = max(current.feature.location.end, subsequent.feature.location.end)
         current.feature.location = FeatureLocation(gene_start, gene_end)
@@ -666,15 +674,19 @@ class ExonSpliceInsertor:
                 self._try_merging(previous, insert, current, tests)
 
     def _get_adj_tests(
-            self,
-            previous: FeatureRearranger.FeatureTuple,
-            insert: FeatureRearranger.FeatureTuple,
-            current: FeatureRearranger.FeatureTuple
+        self,
+        previous: FeatureRearranger.FeatureTuple,
+        insert: FeatureRearranger.FeatureTuple,
+        current: FeatureRearranger.FeatureTuple,
     ) -> TestsTuple:
         is_same_previous = previous.gene == insert.gene
         is_same_current = current.gene == insert.gene
-        is_after_previous = not previous.feature or previous.feature.location.end < insert.feature.location.start
-        is_before_current = not current.feature or insert.feature.location.end < current.feature.location.start
+        is_after_previous = (
+            not previous.feature or previous.feature.location.end < insert.feature.location.start
+        )
+        is_before_current = (
+            not current.feature or insert.feature.location.end < current.feature.location.start
+        )
         not_overlap = is_after_previous and is_before_current
         not_same = not is_same_previous and not is_same_current
         tests_tuple = self.TestsTuple(
@@ -683,16 +695,16 @@ class ExonSpliceInsertor:
             is_after_previous,
             is_before_current,
             not_overlap,
-            not_same
+            not_same,
         )
         return tests_tuple
 
     def _try_merging(
-            self,
-            previous: FeatureRearranger.FeatureTuple,
-            insert: FeatureRearranger.FeatureTuple,
-            current: FeatureRearranger.FeatureTuple,
-            tests: TestsTuple
+        self,
+        previous: FeatureRearranger.FeatureTuple,
+        insert: FeatureRearranger.FeatureTuple,
+        current: FeatureRearranger.FeatureTuple,
+        tests: TestsTuple,
     ):
         is_merged = False
         gene_start = insert.feature.location.start
@@ -750,17 +762,13 @@ class DataCleaning:
         """
         log.info("cleaning extracted sequence annotations")
         if self.exclude_region:
-            log.info(
-                f"  removing excluded regions"
-            )
+            log.info("  removing excluded regions")
         if isinstance(self.min_num_taxa, float):
             log.info(
                 f"  removing annotations that occur in fewer than {self.min_num_taxa:.2f} of taxa"
             )
         else:
-            log.info(
-                f"  removing annotations that occur in fewer than {self.min_num_taxa} taxa"
-            )
+            log.info(f"  removing annotations that occur in fewer than {self.min_num_taxa} taxa")
         log.info(
             f"  removing annotations whose longest sequence is shorter than {self.min_seq_length} bp"
         )
@@ -772,7 +780,9 @@ class DataCleaning:
     def _remove_short(self, feat_name: str, rec_list: List[SeqRecord]):
         longest_seq = max([len(s.seq) for s in rec_list])
         if longest_seq < self.min_seq_length:
-            log.info(f"    removing {feat_name} for not reaching the minimum sequence length defined")
+            log.info(
+                f"    removing {feat_name} for not reaching the minimum sequence length defined"
+            )
             self.plastid_data.remove_nuc(feat_name)
 
     def _remove_infreq(self, feat_name: str, rec_list: List[SeqRecord]):
@@ -789,7 +799,9 @@ class DataCleaning:
                 self.plastid_data.remove_nuc(feat_name)
         else:
             if len(rec_list) < self.min_num_taxa:
-                log.info(f"    removing {feat_name} for not reaching the minimum number of taxa defined")
+                log.info(
+                    f"    removing {feat_name} for not reaching the minimum number of taxa defined"
+                )
                 self.plastid_data.remove_nuc(feat_name)
 
     def _remove_excluded(self, feat_name: str):

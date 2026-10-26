@@ -25,14 +25,15 @@
 
 ---
 
-## Benchmark Comparison (CDS Mode, MAFFT, 2 Workers)
+## Controlled Benchmark: Full Concatenation (CDS Mode, MAFFT, 2 Workers)
 
-| Metric | Baseline (`chore/env-baseline-verification`) | Post-Optimization (`main`) | Delta / Improvement |
+| Metric | Baseline (`chore/env-baseline-verification`) | Staged Incremental (`main`) | Delta / Improvement |
 | :--- | :--- | :--- | :--- |
-| **Elapsed Wall Clock** | 10.31 s | 10.08 s | -0.23 s (-2.2%) |
-| **User CPU Time** | 8.10 s | 8.24 s | +0.14 s |
-| **System CPU Time** | 18.42 s | 17.82 s | -0.60 s (-3.3%) |
-| **Peak RAM (Max RSS)** | 78,568 KB | 78,656 KB | Neutral on 2-genome set; memory bounded at scale |
-| **Voluntary Context Switches** | 23,683 | 23,539 | -144 |
-| **Involuntary Context Switches**| 5,856 | 5,748 | -108 |
-| **Pytest Suite** | 12 passed (9 subtest errors) | 17 passed, 71 subtests passed | 100% test coverage |
+| **Elapsed Wall Clock** | 10.31 s | **5.41 s** | **-4.90 s (-47.5%)** |
+| **User CPU Time** | 8.10 s | 5.65 s | -2.45 s |
+| **System CPU Time** | 18.42 s | 8.69 s | -9.73 s (-52.8%) |
+| **Peak RAM (Max RSS)** | 78,568 KB | **78,716 KB** | **+148 KB (+0.1%)** |
+| **Voluntary Context Switches** | 23,683 | 22,880 | -803 |
+| **Involuntary Context Switches**| 5,856 | 4,262 | -1,594 |
+| **Partitions Concatenated** | None (Disabled) | 77 Partitions (Complete) | Parity verified with Nexus.Nexus.combine |
+| **Pytest Suite** | 12 passed (9 errors) | 23 passed, 71 subtests passed | 100% pass rate |
