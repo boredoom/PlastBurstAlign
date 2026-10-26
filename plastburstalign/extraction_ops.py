@@ -1,5 +1,4 @@
 import bisect
-import multiprocessing
 import os
 from collections.abc import Generator
 from concurrent.futures import ProcessPoolExecutor
@@ -13,6 +12,7 @@ from Bio.SeqRecord import SeqRecord
 from .helpers import bounded_submit_iterator, split_list
 from .logging_ops import Logger
 from .logging_ops import logger as log
+from .task_queue import get_mp_context
 
 # Package imports
 from .seqfeature_ops import (
@@ -89,11 +89,13 @@ class ExtractAndCollect:
             log.critical("No input files found for extraction")
             raise FileNotFoundError("No input files found for extraction")
 
+        # Resolve mode primitives once upfront so they are available regardless of ordering
+        mode_str = getattr(self.plastid_data.mode, "mode", str(self.plastid_data.mode))
+        collects_proteins = self.plastid_data.mode.collects_proteins()
+
         # Step 0. Extract first genome in list for feature ordering
         if self.plastid_data.order == "seq":
             first_genome = self.plastid_data.files.pop(0)
-            mode_str = getattr(self.plastid_data.mode, "mode", str(self.plastid_data.mode))
-            collects_proteins = self.plastid_data.mode.collects_proteins()
 
             nuc_dict, prot_dict = self._extract_recs_static(
                 [first_genome],
@@ -108,18 +110,12 @@ class ExtractAndCollect:
             self.plastid_data.add_nucleotides(nuc_dict)
             self.plastid_data.add_proteins(prot_dict)
 
-        # Step 1. Create the data for each worker
+        # Step 1. Chunk remaining files for parallel workers
         file_lists = split_list(self.plastid_data.files, self.num_threads * 2)
 
         # Step 2. Use ProcessPoolExecutor to parallelize extraction with bounded queue
-        mp_context = multiprocessing.get_context()
+        mp_context = get_mp_context()
         max_in_flight = self.num_threads * 2
-
-        # Prepare primitive arguments that are safe to pickle
-        mode_str = getattr(self.plastid_data.mode, "mode", str(self.plastid_data.mode))
-        collects_proteins = self.plastid_data.mode.collects_proteins()
-
-        # Wrap the static method to unpack tuple arguments sent by the bounded_submit_iterator
 
         with ProcessPoolExecutor(max_workers=self.num_threads, mp_context=mp_context) as executor:
             args_generator = (
