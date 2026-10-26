@@ -1,3 +1,4 @@
+import copy
 import glob
 import multiprocessing
 import os
@@ -47,6 +48,83 @@ def _save_region_unaligned(args: tuple) -> None:
     except Exception as e:
         log.error(f"Error saving {feat_name}: {e}")
 
+class IncrementalNexusAccumulator:
+    """
+    Incrementally accumulates individual Nexus alignment matrices into a single
+    concatenated Nexus alignment. Produces output byte-equivalent to Nexus.Nexus.combine()
+    without holding all individual alignments in memory simultaneously.
+    """
+
+    def __init__(self) -> None:
+        self.combined: Optional[Nexus.Nexus.Nexus] = None
+
+    def add(self, name: str, m: Nexus.Nexus.Nexus) -> None:
+        if self.combined is None:
+            self.combined = copy.deepcopy(m)
+            self.combined.charlabels = None
+            self.combined.statelabels = None
+            self.combined.interleave = False
+            self.combined.translate = None
+
+            for cn, cs in list(self.combined.charsets.items()):
+                self.combined.charsets[f"{name}.{cn}"] = cs
+                del self.combined.charsets[cn]
+            for tn, ts in list(self.combined.taxsets.items()):
+                self.combined.taxsets[f"{name}.{tn}"] = ts
+                del self.combined.taxsets[tn]
+
+            self.combined.charpartitions = {"combined": {name: list(range(self.combined.nchar))}}
+            return
+
+        # Check for mixed datatypes across partitions
+        if self.combined.datatype != m.datatype:
+            self.combined.datatype = "None"
+
+        both = [t for t in self.combined.taxlabels if t in m.taxlabels]
+        combined_only = [t for t in self.combined.taxlabels if t not in both]
+        m_only = [t for t in m.taxlabels if t not in both]
+
+        for t in both:
+            self.combined.matrix[t] += Seq(
+                str(m.matrix[t])
+                .replace(m.gap, self.combined.gap)
+                .replace(m.missing, self.combined.missing)
+            )
+        for t in combined_only:
+            self.combined.matrix[t] += Seq(self.combined.missing * m.nchar)
+        for t in m_only:
+            self.combined.matrix[t] = Seq(self.combined.missing * self.combined.nchar) + Seq(
+                str(m.matrix[t])
+                .replace(m.gap, self.combined.gap)
+                .replace(m.missing, self.combined.missing)
+            )
+
+        self.combined.taxlabels.extend(m_only)
+        for cn, cs in m.charsets.items():
+            self.combined.charsets[f"{name}.{cn}"] = [x + self.combined.nchar for x in cs]
+        if m.taxsets:
+            if not self.combined.taxsets:
+                self.combined.taxsets = {}
+            self.combined.taxsets.update({f"{name}.{tn}": ts for tn, ts in m.taxsets.items()})
+
+        self.combined.charpartitions["combined"][name] = list(
+            range(self.combined.nchar, self.combined.nchar + m.nchar)
+        )
+        if m.charlabels:
+            if not self.combined.charlabels:
+                self.combined.charlabels = {}
+            self.combined.charlabels.update(
+                {self.combined.nchar + i: label for i, label in m.charlabels.items()}
+            )
+        self.combined.nchar += m.nchar
+        self.combined.ntax += len(m_only)
+
+    def finalize(self) -> Optional[Nexus.Nexus.Nexus]:
+        if self.combined is None:
+            return None
+        for c in self.combined.charpartitions["combined"]:
+            self.combined.charsets[c] = self.combined.charpartitions["combined"][c]
+        return self.combined
 
 class AlignmentCoordination:
     def __init__(self, plastid_data: PlastidData, user_params: Dict[str, Any]):
@@ -288,27 +366,27 @@ class AlignmentCoordination:
         Concatenated region alignments are saved to file in both NEXUS and FASTA formats,
         located in the path specified by `user_params.out_dir`.
         """
-        # if not self.success_list:
-        #     self.collect_MSAs()
+        num_successful = len(self.success_list)
+        if num_successful == 0:
+            log.warning("No successful alignments found to concatenate.")
+            return
 
         def _concat_sync():
-            # Write concatenated alignments to file in NEXUS format
-            mp_context = multiprocessing.get_context()
-            nexus_write = mp_context.Process(target=alignm_concat.write_nexus_data,
-                                             kwargs={"filename": out_fn_nucl_concat_nexus})
-            nexus_write.start()
-
-            # Write concatenated alignments to file in FASTA format
-            fasta_write = mp_context.Process(target=alignm_concat.export_fasta,
-                                             kwargs={"filename": out_fn_nucl_concat_fasta})
-            fasta_write.start()
-
-            # Wait for both files to be written before continuing
-            nexus_write.join()
-            fasta_write.join()
-            if nexus_write.exitcode != 0 or fasta_write.exitcode != 0:
-                log.error("Child writer failed (nexus=%s, fasta=%s)", nexus_write.exitcode, fasta_write.exitcode)
-                raise RuntimeError("Child process failure while writing concatenated alignments")
+            try:
+                with ThreadPoolExecutor(max_workers=2) as write_pool:
+                    fut_nexus = write_pool.submit(
+                        alignm_concat.write_nexus_data,
+                        filename=out_fn_nucl_concat_nexus
+                    )
+                    fut_fasta = write_pool.submit(
+                        alignm_concat.export_fasta,
+                        filename=out_fn_nucl_concat_fasta
+                    )
+                    fut_nexus.result()
+                    fut_fasta.result()
+            except Exception as e:
+                log.error(f"Writer thread failure while exporting alignments: {e}")
+                raise RuntimeError(f"Failure while writing concatenated alignments: {e}") from e
 
         def _load_nexus_alignment(msa_name: str, nexus_path: str) -> Nexus.Nexus.Nexus:
             # Load the Nexus alignment and rename sequence IDs for concatenation
@@ -322,34 +400,34 @@ class AlignmentCoordination:
             return Nexus.Nexus.Nexus(nexus_string)
 
         log.info(f"concatenating all successful alignments in `{self.plastid_data.order}` order")
-        # sort alignments according to user specification
+        # Sort alignment paths according to user specification
         self.plastid_data.set_order_map()
         self.success_list.sort(key=lambda t: self.plastid_data.order_map[t[0]])
 
-        # Load Nexus alignments with renamed sequence IDs
-        self.success_list = [
-            (msa_name, _load_nexus_alignment(msa_name, nexus_path))
-            for msa_name, nexus_path in self.success_list
-        ]
-
-        # Step 1. Define output names
+        # Step 1. Define output filenames
         out_fn_nucl_concat_fasta = os.path.join(
-            self.user_params.get("out_dir"), "nucl_" + str(len(self.success_list)) + "concat.aligned.fasta"
+            self.user_params.get("out_dir"), f"nucl_{num_successful}concat.aligned.fasta"
         )
         out_fn_nucl_concat_nexus = os.path.join(
-            self.user_params.get("out_dir"), "nucl_" + str(len(self.success_list)) + "concat.aligned.nexus"
+            self.user_params.get("out_dir"), f"nucl_{num_successful}concat.aligned.nexus"
         )
 
-        # Step 2. Do concatenation
+        # Step 2. Do staged incremental concatenation
         try:
-            alignm_concat = Nexus.Nexus.combine(
-                self.success_list
-            )
+            accumulator = IncrementalNexusAccumulator()
+            for msa_name, nexus_path in self.success_list:
+                single_matrix = _load_nexus_alignment(msa_name, nexus_path)
+                accumulator.add(msa_name, single_matrix)
+            alignm_concat = accumulator.finalize()
         except Exception as e:
             log.critical("Unable to concatenate alignments.\n" f"Error message: {e}")
             raise Exception()
 
-        # Step 3. Write concatenated alignment to file,
+        if alignm_concat is None:
+            log.warning("Concatenation produced empty output.")
+            return
+
+        # Step 3. Write concatenated alignment to file
         log.info(" writing concatenation to file in NEXUS and FASTA formats")
         _concat_sync()
 
