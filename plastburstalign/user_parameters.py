@@ -257,26 +257,26 @@ class UserParametersScript(UserParameters):
         """
         parser = self._get_parser()
         args = parser.parse_args()
-        
+
         # Load config file if specified
         config_params = {}
         if hasattr(args, 'config') and args.config:
             config_params = self._load_config_file(args.config)
-        
+
         # Merge command line args with config file, command line takes precedence
         args_dict = self._get_construct_dict(args)
         merged_params = {**config_params, **args_dict}
-        
+
         super().__init__(**merged_params)
 
     @staticmethod
     def _load_config_file(config_path: str) -> Dict[str, Any]:
         """
         Load parameters from a YAML config file.
-        
+
         Args:
             config_path: Path to the YAML config file
-            
+
         Returns:
             Dictionary of parameters from config file
         """
@@ -329,18 +329,18 @@ class UserParametersScript(UserParameters):
             help="(Optional) Type of regions to be extracted (`cds`, `int`, `igs`, or `rna` for tRNAs and rRNAs)",
         )
         parser.add_argument(
-            "--no-trna",
+            "--trna",
             dest="include_trna",
-            action='store_false',
+            action=argparse.BooleanOptionalAction,
             default=None,
-            help="Disable tRNA extraction and alignment in RNA mode (default: enabled)",
+            help="Enable or disable tRNA extraction and alignment in RNA mode (default: enabled)",
         )
         parser.add_argument(
-            "--no-rrna",
+            "--rrna",
             dest="include_rrna",
-            action='store_false',
+            action=argparse.BooleanOptionalAction,
             default=None,
-            help="Disable rRNA extraction and alignment in RNA mode (default: enabled)",
+            help="Enable or disable rRNA extraction and alignment in RNA mode (default: enabled)",
         )
         parser.add_argument(
             "--fileext",
