@@ -4,6 +4,7 @@ import os
 from enum import Enum
 from typing import List, Union, Any, Dict, Optional
 import yaml
+import math
 
 # Package imports
 from .logging_ops import Logger, logger as log
@@ -154,12 +155,15 @@ class UserParameters(Dict[str, Any]):
         self["min_seq_length"] = min_seq_length
 
     def _set_min_num_taxa(self, min_num_taxa: Union[int, float]):
+        if isinstance(min_num_taxa, bool):
+            log.critical(f"Invalid `min_num_taxa` type provided: {type(min_num_taxa)}")
+            raise TypeError
         if isinstance(min_num_taxa, int):
             if min_num_taxa < 1:
                 log.critical(f"Invalid `min_num_taxa` value provided: {min_num_taxa}")
                 raise ValueError
         elif isinstance(min_num_taxa, float):
-            if min_num_taxa <= 0 or min_num_taxa > 1:
+            if math.isnan(min_num_taxa) or min_num_taxa <= 0 or min_num_taxa > 1:
                 log.critical(f"Invalid `min_num_taxa` value provided: {min_num_taxa}")
                 raise ValueError
         else:
@@ -308,13 +312,13 @@ class UserParametersScript(UserParameters):
             if value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
                 return int(value)
             parsed = float(value)
+            if math.isnan(parsed) or math.isinf(parsed):
+                raise ValueError
+            return parsed
         except ValueError:
             raise argparse.ArgumentTypeError(
                 "--minnumtaxa must be an integer (e.g. 5) or a relative frequency (0<value<=1)"
             )
-        if parsed.is_integer():
-            return int(parsed)
-        return parsed
 
     @staticmethod
     def _get_parser() -> argparse.ArgumentParser:

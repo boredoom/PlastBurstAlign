@@ -852,9 +852,11 @@ class DataCleaning:
 
             count = stats["count"]
             if isinstance(self.min_num_taxa, float):
-                if num_taxa is None:
+                if num_taxa is None or num_taxa <= 0:
                     log.critical("Total number of taxa is unavailable for frequency filtering")
-                    raise AttributeError
+                    raise AttributeError(
+                        "Total number of taxa is unavailable for frequency filtering"
+                    )
                 if (count / num_taxa) < self.min_num_taxa:
                     log.info(
                         f"    removing {feat_name} for not reaching the minimum relative frequency of taxa defined"
