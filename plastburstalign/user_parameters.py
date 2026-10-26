@@ -38,9 +38,10 @@ class UserParameters(Dict[str, Any]):
         verbose: bool = False,
         order: str = "seq",
         concat: bool = False,
-        alignment_tool: str = "muscle",
+        alignment_tool: str = "mafft",
         alignment_tool_path: Optional[str] = None,
         alignment_tool_config: Optional[Dict[str, Any]] = None,
+        alignment_command: Optional[str] = None,
         config_file: Optional[str] = None,
         include_trna: bool = True,
         include_rrna: bool = True,
@@ -88,6 +89,7 @@ class UserParameters(Dict[str, Any]):
         self._set_alignment_tool(alignment_tool)
         self._set_alignment_tool_path(alignment_tool_path)
         self._set_alignment_tool_config(alignment_tool_config)
+        self._set_alignment_command(alignment_command)
         self._set_config_file(config_file)
 
     def _set_select_mode(self, select_mode: str):
@@ -219,6 +221,13 @@ class UserParameters(Dict[str, Any]):
         self._test_type("alignment_tool_config", alignment_tool_config, dict)
         self["alignment_tool_config"] = alignment_tool_config
 
+    def _set_alignment_command(self, alignment_command: Optional[str]):
+        if alignment_command is not None:
+            self._test_type("alignment_command", alignment_command, str)
+            self["alignment_command"] = alignment_command.strip()
+        else:
+            self["alignment_command"] = None
+
     def _set_config_file(self, config_file: Optional[str]):
         if config_file and not os.path.exists(config_file):
             log.warning(f"Specified config file does not exist: {config_file}")
@@ -249,6 +258,8 @@ class UserParametersScript(UserParameters):
         "concat": "concat",
         "alignmenttool": "alignment_tool",
         "alignmenttoolpath": "alignment_tool_path",
+        "alignmentcommand": "alignment_command",
+        "alignmentcmd": "alignment_command",
         "config": "config_file",
     }
 
@@ -429,6 +440,18 @@ class UserParametersScript(UserParameters):
             type=str,
             required=False,
             help="(Optional) Path to alignment tool executable",
+        )
+        parser.add_argument(
+            "--alignmentcommand",
+            "--alignmentcmd",
+            type=str,
+            required=False,
+            default=argparse.SUPPRESS,
+            help=(
+                "Custom alignment command template. Placeholders: "
+                "%%INPUT%% (input FASTA), %%OUTPUT%% (output FASTA), %%THREADS%% (budgeted threads). "
+                "Example: 'mafft --thread %%THREADS%% --retree 1 %%INPUT%% > %%OUTPUT%%'"
+            ),
         )
         parser.add_argument(
             "--config",
