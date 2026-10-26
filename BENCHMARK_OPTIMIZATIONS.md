@@ -18,6 +18,11 @@
    - Capped in-flight futures across extraction, unaligned matrix serialization, multiple sequence alignments (nucleotide and protein), and NEXUS conversions to $2 \times \text{num\_workers}$.
    - Streamed tasks through generators to prevent memory accumulation when scaling to thousands of genomes.
 
+3. **Target 3: Staged Incremental Concatenation & Pooled Alignment Export**
+   - Implemented `IncrementalNexusAccumulator` to sequentially stream individual NEXUS matrices into the accumulated alignment, replacing `Nexus.Nexus.combine()` which required simultaneous memory residency of all partitioned alignments.
+   - Replaced child worker `multiprocessing.Process` invocations during concatenated FASTA and NEXUS disk exports with a concurrent `ThreadPoolExecutor(max_workers=2)`, eliminating IPC serialization and redundant memory duplication.
+   - Successfully verified 77 concatenated CDS partitions (`nucl_77concat.aligned.*`) with zero data drift against monolithic combination.
+
 ---
 
 ## Benchmark Comparison (CDS Mode, MAFFT, 2 Workers)
