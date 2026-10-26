@@ -14,7 +14,7 @@ from .seqfeature_ops import (PlastidData, PlastidDict, IntergenicDict,
                              GeneFeature, ProteinFeature, IntergenicFeature,
                              IntronFeature, PlastidFeature)
 from .logging_ops import Logger, logger as log
-from .helpers import split_list
+from .helpers import split_list, bounded_submit_iterator
 
 
 class ExtractAndCollect:
@@ -84,13 +84,13 @@ class ExtractAndCollect:
         # Step 1. Create the data for each worker
         file_lists = split_list(self.plastid_data.files, self.num_threads * 2)
 
-        # Step 2. Use ProcessPoolExecutor to parallelize extraction
+        # Step 2. Use ProcessPoolExecutor to parallelize extraction with bounded queue
         mp_context = multiprocessing.get_context()
+        max_in_flight = self.num_threads * 2
         with ProcessPoolExecutor(max_workers=self.num_threads, mp_context=mp_context) as executor:
-            future_to_recs = [
-                executor.submit(self._extract_recs, file_list) for file_list in file_lists
-            ]
-            for future in as_completed(future_to_recs):
+            for _, future in bounded_submit_iterator(
+                executor, self._extract_recs, file_lists, max_in_flight=max_in_flight
+            ):
                 nuc_dict, prot_dict = future.result()
                 self.plastid_data.add_nucleotides(nuc_dict)
                 self.plastid_data.add_proteins(prot_dict)

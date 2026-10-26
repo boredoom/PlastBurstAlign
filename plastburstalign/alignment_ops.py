@@ -9,7 +9,7 @@ import tarfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from io import StringIO
-import time 
+import time
 from typing import List, Callable, Tuple, Mapping, Optional, Dict, Any
 import requests
 from Bio import SeqIO, Nexus, AlignIO
@@ -17,7 +17,7 @@ from Bio.SeqRecord import SeqRecord
 from Bio.Align import MultipleSeqAlignment
 from Bio.Data.CodonTable import ambiguous_generic_by_id
 from Bio.Seq import Seq
-from .helpers import split_list
+from .helpers import split_list, bounded_submit_iterator
 from .logging_ops import Logger, logger as log
 from .seqfeature_ops import PlastidData
 from .alignment_tools import get_alignment_tool
@@ -30,7 +30,7 @@ def _save_region_unaligned(args: tuple) -> None:
     """
     Helper function to save one region's unaligned sequences to file.
     Must be at module level to be pickleable for multiprocessing.
-    
+
     Args:
         args: Tuple of (feat_name, nucleotides_data, proteins_data, out_dir, collect_proteins)
     """
@@ -39,7 +39,7 @@ def _save_region_unaligned(args: tuple) -> None:
         out_fn_unalign_nucl = os.path.join(out_dir, f"nucl_{feat_name}.unalign.fasta")
         with open(out_fn_unalign_nucl, "w") as hndl:
             SeqIO.write(nucleotides_data, hndl, "fasta")
-        
+
         if collect_proteins and proteins_data:
             out_fn_unalign_prot = os.path.join(out_dir, f"prot_{feat_name}.unalign.fasta")
             with open(out_fn_unalign_prot, "w") as hndl:
@@ -68,11 +68,11 @@ class AlignmentCoordination:
         tool_name = (user_params or {}).get("alignment_tool", "mafft") or "mafft"
         tool_path = user_params.get("alignment_tool_path") if user_params else None
         self.aligner = get_alignment_tool(tool_name, user_params, tool_path)
-        
+
         if not self.aligner:
             log.error("Failed to initialize alignment tool, falling back to MAFFT")
             self.aligner = get_alignment_tool("mafft", user_params, None)
-        
+
 
     def save_unaligned(self):
         """
@@ -81,24 +81,28 @@ class AlignmentCoordination:
         If the plastid data contains protein sequences, those are saved as unaligned protein matrices.
         """
         log.info("saving individual regions as unaligned nucleotide matrices")
-        
+
         num_workers = self.user_params.get("num_threads")
         # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
         mp_context = multiprocessing.get_context()  # same on all platforms
-        
-        # Prepare arguments for each region
-        args_list = []
-        for feat_name in self.plastid_data.nucleotides.keys():
-            nuc_data = self.plastid_data.nucleotides.get(feat_name)
-            prot_data = self.plastid_data.proteins.get(feat_name) if self.plastid_data.mode.collects_proteins() else None
-            args_list.append((feat_name, nuc_data, prot_data, self.user_params.get("out_dir"), self.plastid_data.mode.collects_proteins()))
-        
-        # Use ProcessPoolExecutor to parallelize
+
+        collect_proteins = self.plastid_data.mode.collects_proteins()
+        out_dir = self.user_params.get("out_dir")
+
+        def _args_generator():
+            for feat_name in self.plastid_data.nucleotides.keys():
+                nuc_data = self.plastid_data.nucleotides.get(feat_name)
+                prot_data = self.plastid_data.proteins.get(feat_name) if collect_proteins else None
+                yield (feat_name, nuc_data, prot_data, out_dir, collect_proteins)
+
+        # Use ProcessPoolExecutor to parallelize with bounded in-flight queue
+        max_in_flight = num_workers * 2
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context) as executor:
-            futures = [executor.submit(_save_region_unaligned, args) for args in args_list]
-            for future in futures:
-                future.result()  # Wait for completion and catch exceptions
-        
+            for _, future in bounded_submit_iterator(
+                executor, _save_region_unaligned, _args_generator(), max_in_flight=max_in_flight
+            ):
+                future.result()
+
         self._unaligned_saved = True
 
     def perform_MSA(self):
@@ -150,13 +154,11 @@ class AlignmentCoordination:
         num_workers = self.user_params.get("num_threads")
         # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
         if self.plastid_data.nucleotides.items():
+            max_in_flight = num_workers * 2
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                future_to_alignment = {
-                    executor.submit(single_nuc_MSA, feat_name): feat_name
-                    for feat_name in self.plastid_data.nucleotides.keys()
-                }
-                for future in as_completed(future_to_alignment):
-                    k = future_to_alignment[future]
+                for k, future in bounded_submit_iterator(
+                    executor, single_nuc_MSA, self.plastid_data.nucleotides.keys(), max_in_flight=max_in_flight
+                ):
                     try:
                         future.result()
                     except Exception as e:
@@ -211,18 +213,15 @@ class AlignmentCoordination:
                 )
         ### Inner Function - End ###
 
-        # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation
+        # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation with bounded queue
         num_workers = self.user_params.get("num_threads")
-        # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
+        max_in_flight = num_workers * 2
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            future_to_alignment = {
-                executor.submit(single_prot_MSA, feat_name): feat_name
-                for feat_name in self.plastid_data.nucleotides.keys()
-            }
-            for future in as_completed(future_to_alignment):
-                k = future_to_alignment[future]
+            for k, future in bounded_submit_iterator(
+                executor, single_prot_MSA, self.plastid_data.nucleotides.keys(), max_in_flight=max_in_flight
+            ):
                 try:
-                    future.result()  # If needed, you can handle results here
+                    future.result()
                 except Exception as e:
                     log.error(f"{k} generated an exception: {e}")
 
@@ -231,7 +230,7 @@ class AlignmentCoordination:
         For each region in the plastid data, the sequences are aligned and saved to file in FASTA and NEXUS format
         in the path specified by `user_params.out_dir`.
         """
-        
+
         if not self._aligned_saved:
             self.perform_MSA()
 
@@ -246,17 +245,16 @@ class AlignmentCoordination:
         num_workers = self.user_params.get("num_threads")
         # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
 
+        max_in_flight = num_workers * 2
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            future_to_success = [
-                executor.submit(self.convert_MSAs, msa_list)
-                for msa_list in msa_lists
-            ]
-            for future in as_completed(future_to_success):
+            for _, future in bounded_submit_iterator(
+                executor, self.convert_MSAs, msa_lists, max_in_flight=max_in_flight
+            ):
                 success_list = future.result()
                 if len(success_list) > 0:
                     self.success_list.extend(success_list)
 
-   
+
     def convert_MSAs(self, msa_list: List[str]) -> List[Tuple[str, str]]:
         """Convert each region's aligned FASTA file to NEXUS format and collect successful conversions."""
         def _convert_FASTA_to_NEXUS(msa_name: str) -> Optional[str]:
@@ -311,7 +309,7 @@ class AlignmentCoordination:
             if nexus_write.exitcode != 0 or fasta_write.exitcode != 0:
                 log.error("Child writer failed (nexus=%s, fasta=%s)", nexus_write.exitcode, fasta_write.exitcode)
                 raise RuntimeError("Child process failure while writing concatenated alignments")
-           
+
         def _load_nexus_alignment(msa_name: str, nexus_path: str) -> Nexus.Nexus.Nexus:
             # Load the Nexus alignment and rename sequence IDs for concatenation
             alignm_nexus = AlignIO.read(nexus_path, "nexus")
@@ -346,7 +344,7 @@ class AlignmentCoordination:
         try:
             alignm_concat = Nexus.Nexus.combine(
                 self.success_list
-            )  
+            )
         except Exception as e:
             log.critical("Unable to concatenate alignments.\n" f"Error message: {e}")
             raise Exception()
@@ -354,7 +352,7 @@ class AlignmentCoordination:
         # Step 3. Write concatenated alignment to file,
         log.info(" writing concatenation to file in NEXUS and FASTA formats")
         _concat_sync()
-       
+
 # -----------------------------------------------------------------#
 
 
@@ -558,5 +556,3 @@ class BackTranslation:
         # Step 4. Write the back-translated nucleotide alignment to a file
         with open(self.nuc_align_file, "w") as output_handle:
             AlignIO.write(nuc_align, output_handle, self.align_format)
-
-
