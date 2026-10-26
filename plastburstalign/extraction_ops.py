@@ -37,7 +37,15 @@ class ExtractAndCollect:
         self.exclude_cds = user_params.get("exclude_fullcds")
         self.include_trna = user_params.get("include_trna", True)
         self.include_rrna = user_params.get("include_rrna", True)
+        self.exclude_region = set(user_params.get("exclude_region") or [])
+        min_len = user_params.get("min_seq_length")
+        self.min_seq_length = min_len if min_len is not None else 3
         self._set_extract_fun()
+
+    def _is_region_excluded(self, *names: Optional[str]) -> bool:
+        if not self.exclude_region:
+            return False
+        return any(name in self.exclude_region for name in names if name)
 
     def _set_extract_fun(self):
         if self.plastid_data.mode == "cds":
@@ -118,18 +126,31 @@ class ExtractAndCollect:
             extract_rec(f)
         return nuc_dict, prot_dict
 
-    def _extract_cds(self, rec: SeqRecord, nuc_dict: PlastidDict, protein_dict: PlastidDict):
+    def _extract_cds(self, rec: SeqRecord, nuc_dict: PlastidDict, protein_dict: Optional[PlastidDict] = None):
         """
         Extracts all CDS (coding sequences = genes) from a given sequence record
         """
         for feature in RecordFeatures(rec, self.exclude_cds).cds_feats:
+            if len(feature.location) < self.min_seq_length:
+                continue
+            feat_name = PlastidFeature.name_cleaner.get_safe_gene(feature)
+            if self._is_region_excluded(feat_name):
+                continue
+
             # Step 1. Extract nucleotide sequence of each gene and add to dictionary
             gene = GeneFeature(rec, feature)
+            if gene.seq_obj is None:
+                nuc_dict.add_feature(gene)
+                continue
+            if len(gene.seq_obj) < self.min_seq_length or self._is_region_excluded(gene.feat_name):
+                continue
+
             nuc_dict.add_feature(gene)
 
             # Step 2. Translate nucleotide sequence to protein and add to dictionary
-            protein = ProteinFeature(gene=gene)
-            protein_dict.add_feature(protein)
+            if protein_dict is not None:
+                protein = ProteinFeature(gene=gene)
+                protein_dict.add_feature(protein)
 
     def _extract_rna(self, rec: SeqRecord, nuc_dict: PlastidDict):
         """
@@ -140,7 +161,20 @@ class ExtractAndCollect:
                 (feature.type == "tRNA" and self.include_trna)
                 or (feature.type == "rRNA" and self.include_rrna)
             ):
-                nuc_dict.add_feature(PlastidFeature(rec, feature))
+                if len(feature.location) < self.min_seq_length:
+                    continue
+                feat_name = PlastidFeature.name_cleaner.get_safe_gene(feature)
+                if self._is_region_excluded(feat_name):
+                    continue
+
+                feat = PlastidFeature(rec, feature)
+                if feat.seq_obj is None:
+                    nuc_dict.add_feature(feat)
+                    continue
+                if len(feat.seq_obj) < self.min_seq_length or self._is_region_excluded(feat.feat_name):
+                    continue
+
+                nuc_dict.add_feature(feat)
 
     def _extract_igs(self, rec: SeqRecord, nuc_dict: PlastidDict):
         """
@@ -156,8 +190,29 @@ class ExtractAndCollect:
             current_feat = subsequent_feat
             subsequent_feat = feature
 
+            # Early pre-checks before constructing IntergenicFeature
+            curr_name = PlastidFeature.name_cleaner.get_safe_gene(current_feat)
+            sub_name = PlastidFeature.name_cleaner.get_safe_gene(subsequent_feat)
+            if curr_name and sub_name:
+                igs_name = f"{curr_name}_{sub_name}"
+                inv_name = f"{sub_name}_{curr_name}"
+                if self._is_region_excluded(igs_name, inv_name):
+                    continue
+
+            start_pos = int(current_feat.location.end)
+            end_pos = int(subsequent_feat.location.start)
+            if start_pos < end_pos and (end_pos - start_pos) < self.min_seq_length:
+                continue
+
             # Step 2. Make IGS SeqFeature
             igs = IntergenicFeature(rec, current_feat, subsequent_feat)
+            if igs.seq_obj is None:
+                nuc_dict.add_feature(igs)
+                continue
+            if len(igs.seq_obj) < self.min_seq_length:
+                continue
+            if self._is_region_excluded(igs.feat_name, getattr(igs, "inv_feat_name", None)):
+                continue
 
             # Step 3. Attach IGS to growing dictionary
             nuc_dict.add_feature(igs)
@@ -166,23 +221,38 @@ class ExtractAndCollect:
         """
         Extracts all INT (introns) from a given sequence record
         """
+        def _add_intron(feature_obj: SeqFeature, offset: int):
+            exon_1 = feature_obj.location.parts[offset]
+            exon_2 = feature_obj.location.parts[offset + 1]
+            intron_len = abs(int(exon_2.start) - int(exon_1.end)) if exon_2.start >= exon_1.end else abs(int(exon_1.start) - int(exon_2.end))
+            if intron_len < self.min_seq_length:
+                return
+
+            gene_name = PlastidFeature.name_cleaner.get_safe_gene(feature_obj)
+            intron_name = f"{gene_name}_intron{offset + 1}" if gene_name else None
+            if self._is_region_excluded(intron_name):
+                return
+
+            intron = IntronFeature(rec, feature_obj, offset)
+            if intron.seq_obj is None:
+                nuc_dict.add_feature(intron)
+                return
+            if len(intron.seq_obj) < self.min_seq_length or self._is_region_excluded(intron.feat_name):
+                return
+            nuc_dict.add_feature(intron)
+
         for feature in RecordFeatures(rec, self.exclude_cds).int_feats:
             # Step 1.a. If one intron in gene:
             if len(feature.location.parts) == 2:
-                intron = IntronFeature(rec, feature)
-                nuc_dict.add_feature(intron)
+                _add_intron(feature, 0)
 
             # Step 1.b. If two introns in gene:
             elif len(feature.location.parts) == 3:
                 feature_copy = deepcopy(
                     feature
                 )  # Important b/c feature is overwritten in extract_internal_intron()
-
-                intron = IntronFeature(rec, feature)
-                nuc_dict.add_feature(intron)
-
-                intron = IntronFeature(rec, feature_copy, 1)
-                nuc_dict.add_feature(intron)
+                _add_intron(feature, 0)
+                _add_intron(feature_copy, 1)
 
 
 class RecordFeatures:

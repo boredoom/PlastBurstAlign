@@ -288,5 +288,20 @@ class RNAModeTests(unittest.TestCase):
                 )
 
 
+    def test_early_filtering_during_extraction(self):
+        # 1. exclude_region is skipped directly during extraction (before clean())
+        data, params = self.extract_record(exclude_region=["rrn16"])
+        self.assertNotIn("rrn16", data.nucleotides)
+        self.assertIn("trnK_UUU", data.nucleotides)
+        self.assertIn("trnH_GUG", data.nucleotides)
+
+        # 2. min_seq_length filters out short features directly during extraction (before clean())
+        # trnH_GUG length is 7 bp; min_seq_length=8 should discard it immediately
+        data, params = self.extract_record(min_seq_length=8)
+        self.assertNotIn("trnH_GUG", data.nucleotides)
+        self.assertIn("rrn16", data.nucleotides)
+        self.assertIn("trnK_UUU", data.nucleotides)
+
+
 if __name__ == "__main__":
     unittest.main()
