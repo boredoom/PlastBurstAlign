@@ -71,9 +71,17 @@ class RNAModeTests(unittest.TestCase):
         ]
         return record
 
-    def extract_record(self, **overrides):
-        params = self.parameters(**overrides)
+    def extract_record(self, **kwargs) -> tuple[PlastidData, dict]:
+        import tempfile
+
+        # Give every test isolation a fresh tempdir to store the db
+        temp_out = tempfile.mkdtemp()
+        params = self.parameters(**kwargs)
+        params["out_dir"] = temp_out
+
         data = PlastidData(params)
+        data.files = [str(self.input_dir / "taxon1.gb")]
+        data.num_taxa = 1
         ExtractAndCollect(data, params)._extract_rna(self.record(), data.nucleotides)
         return data, params
 

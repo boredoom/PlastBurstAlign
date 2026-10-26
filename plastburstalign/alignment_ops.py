@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import multiprocessing
 import os
 import re
 from collections.abc import Callable, Mapping
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from typing import Any
 
@@ -24,28 +23,6 @@ from .seqfeature_ops import PlastidData
 # ===================================================================
 # Module-level helper functions for multiprocessing
 # ===================================================================
-
-
-def _save_region_unaligned(args: tuple) -> None:
-    """
-    Helper function to save one region's unaligned sequences to file.
-    Must be at module level to be pickleable for multiprocessing.
-
-    Args:
-        args: Tuple of (feat_name, nucleotides_data, proteins_data, out_dir, collect_proteins)
-    """
-    feat_name, nucleotides_data, proteins_data, out_dir, collect_proteins = args
-    try:
-        out_fn_unalign_nucl = os.path.join(out_dir, f"nucl_{feat_name}.unalign.fasta")
-        with open(out_fn_unalign_nucl, "w") as hndl:
-            SeqIO.write(nucleotides_data, hndl, "fasta")
-
-        if collect_proteins and proteins_data:
-            out_fn_unalign_prot = os.path.join(out_dir, f"prot_{feat_name}.unalign.fasta")
-            with open(out_fn_unalign_prot, "w") as hndl:
-                SeqIO.write(proteins_data, hndl, "fasta")
-    except Exception as e:
-        log.error(f"Error saving {feat_name}: {e}")
 
 
 class AlignmentCoordination:
@@ -80,27 +57,20 @@ class AlignmentCoordination:
         If the plastid data contains protein sequences, those are saved as unaligned protein matrices.
         """
         log.info("saving individual regions as unaligned nucleotide matrices")
-
-        num_workers = self.user_params.get("num_threads")
-        # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
-        mp_context = multiprocessing.get_context()  # same on all platforms
-
         collect_proteins = self.plastid_data.mode.collects_proteins()
         out_dir = self.user_params.get("out_dir")
+        store = self.plastid_data.store
 
-        def _args_generator():
-            for feat_name in self.plastid_data.nucleotides:
-                nuc_data = self.plastid_data.nucleotides.get(feat_name)
-                prot_data = self.plastid_data.proteins.get(feat_name) if collect_proteins else None
-                yield (feat_name, nuc_data, prot_data, out_dir, collect_proteins)
+        for feat_name in self.plastid_data.nucleotides.keys():
+            try:
+                out_fn_unalign_nucl = os.path.join(out_dir, f"nucl_{feat_name}.unalign.fasta")
+                store.export_fasta(feat_name, "nucl", out_fn_unalign_nucl)
 
-        # Use ProcessPoolExecutor to parallelize with bounded in-flight queue
-        max_in_flight = num_workers * 2
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context) as executor:
-            for _, future in bounded_submit_iterator(
-                executor, _save_region_unaligned, _args_generator(), max_in_flight=max_in_flight
-            ):
-                future.result()
+                if collect_proteins:
+                    out_fn_unalign_prot = os.path.join(out_dir, f"prot_{feat_name}.unalign.fasta")
+                    store.export_fasta(feat_name, "prot", out_fn_unalign_prot)
+            except Exception as e:
+                log.error(f"Error saving {feat_name}: {e}")
 
         self._unaligned_saved = True
 
