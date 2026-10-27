@@ -139,6 +139,33 @@ class DiskBackedFeatureStoreTests(unittest.TestCase):
         self.assertEqual(len(values), 1)
         self.assertEqual(len(values[0]), 1)
 
+    def test_pragmas_configured_correctly(self) -> None:
+        cursor = self.store._conn.cursor()
+        cursor.execute("PRAGMA synchronous;")
+        self.assertEqual(cursor.fetchone()[0], 1)  # NORMAL = 1
+
+        cursor.execute("PRAGMA temp_store;")
+        self.assertEqual(cursor.fetchone()[0], 2)  # MEMORY = 2
+
+    def test_transaction_batching_commits_atomically(self) -> None:
+        with self.store.transaction():
+            self.store.add_record("rbcL", "TaxA", "nucl", "TaxA_rbcL", "", "ATGCATGC")
+            self.store.add_record("rbcL", "TaxB", "nucl", "TaxB_rbcL", "", "ATGCATGG")
+
+        summary = self.store.get_region_summary("nucl")
+        self.assertEqual(summary["rbcL"]["count"], 2)
+
+    def test_transaction_rollback_on_error(self) -> None:
+        try:
+            with self.store.transaction():
+                self.store.add_record("matK", "TaxA", "nucl", "TaxA_matK", "", "AAAA")
+                raise RuntimeError("Simulated crash")
+        except RuntimeError:
+            pass
+
+        summary = self.store.get_region_summary("nucl")
+        self.assertNotIn("matK", summary)
+
 
 if __name__ == "__main__":
     unittest.main()
