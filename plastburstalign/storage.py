@@ -1,6 +1,7 @@
 """Indexed disk-backed storage engine for extracted sequence features.
 
-Replaces in-memory accumulation of SeqRecord instances with indexed SQLite storage,
+Replaces in-memory accumulation of SeqRecord instances with indexed SQLite
+storage,
 enabling O(1) memory footprint during extraction, cleaning, and export.
 """
 
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -23,24 +25,31 @@ class DiskBackedFeatureStore:
         self.db_path = str(db_path) if db_path is not None else ":memory:"
         self._conn = sqlite3.connect(self.db_path, timeout=30.0)
         self._conn.row_factory = sqlite3.Row
+        self._in_transaction = False
+        self._registered_regions: set[str] = set()
         self._init_db()
 
     def _init_db(self) -> None:
         cursor = self._conn.cursor()
         cursor.execute("PRAGMA journal_mode = WAL;")
         cursor.execute("PRAGMA synchronous = NORMAL;")
+        cursor.execute("PRAGMA cache_size = -131072;")  # 128 MB RAM page cache
         cursor.execute(
-            """
+            "PRAGMA temp_store = MEMORY;"
+        )  # Keep temp tables and indices in RAM
+        cursor.execute(
+            "PRAGMA mmap_size = 1073741824;"
+        )  # 1 GB memory-mapped I/O direct access
+
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS regions (
                 region_name TEXT PRIMARY KEY,
                 inv_name TEXT,
                 insertion_order INTEGER NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 1
             );
-            """
-        )
-        cursor.execute(
-            """
+            """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS sequence_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 region_name TEXT NOT NULL,
@@ -53,32 +62,59 @@ class DiskBackedFeatureStore:
                 FOREIGN KEY (region_name) REFERENCES regions(region_name) ON DELETE CASCADE,
                 UNIQUE(region_name, taxon_name, seq_type)
             );
-            """
+            """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_lookup ON"
+            " sequence_records(region_name, seq_type);"
         )
         cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_records_lookup ON sequence_records(region_name, seq_type);"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_records_taxon ON sequence_records(taxon_name, region_name);"
+            "CREATE INDEX IF NOT EXISTS idx_records_taxon ON"
+            " sequence_records(taxon_name, region_name);"
         )
         self._conn.commit()
 
+        # Pre-populate registered regions set from existing table
+        cursor.execute("SELECT region_name FROM regions;")
+        self._registered_regions = {row[0] for row in cursor.fetchall()}
+
+    @contextmanager
+    def transaction(self) -> Iterator[Self]:
+        """Context manager for batching multiple operations in a single atomic transaction."""
+        if self._in_transaction:
+            yield self
+            return
+
+        self._in_transaction = True
+        try:
+            yield self
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        finally:
+            self._in_transaction = False
+
     def register_region(self, region_name: str, inv_name: str | None = None) -> None:
-        """Register a region maintaining first-seen insertion order."""
-        with self._conn:
-            cursor = self._conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO regions (region_name, inv_name, insertion_order, is_active)
-                VALUES (
-                    :name,
-                    :inv,
-                    (SELECT COALESCE(MAX(insertion_order), 0) + 1 FROM regions),
-                    1
-                );
-                """,
-                {"name": region_name, "inv": inv_name},
-            )
+        """Register a region maintaining first-seen insertion order with O(1) set caching."""
+        if region_name in self._registered_regions:
+            return
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO regions (region_name, inv_name, insertion_order, is_active)
+            VALUES (
+                :name,
+                :inv,
+                (SELECT COALESCE(MAX(insertion_order), 0) + 1 FROM regions),
+                1
+            );
+            """,
+            {"name": region_name, "inv": inv_name},
+        )
+        self._registered_regions.add(region_name)
+        if not self._in_transaction:
+            self._conn.commit()
 
     def add_record(
         self,
@@ -93,7 +129,8 @@ class DiskBackedFeatureStore:
         """Insert a sequence record for a region and taxon.
 
         Enforces uniqueness per (region, taxon, seq_type). Handles inverted repeat
-        deduplication when `inv_name` is provided. Returns True if inserted, False if skipped.
+        deduplication when `inv_name` is provided. Returns True if inserted, False if
+        skipped.
         """
         self.register_region(region_name, inv_name=inv_name)
 
@@ -105,35 +142,39 @@ class DiskBackedFeatureStore:
                 WHERE region_name = :inv_name AND taxon_name = :taxon_name AND seq_type = :seq_type
                 LIMIT 1;
                 """,
-                {"inv_name": inv_name, "taxon_name": taxon_name, "seq_type": seq_type},
+                {
+                    "inv_name": inv_name,
+                    "taxon_name": taxon_name,
+                    "seq_type": seq_type,
+                },
             )
             if cursor.fetchone() is not None:
                 return False
 
         seq_len = len(sequence)
-        try:
-            with self._conn:
-                self._conn.execute(
-                    """
-                    INSERT INTO sequence_records (
-                        region_name, taxon_name, seq_type, seq_id, description, sequence, seq_len
-                    ) VALUES (
-                        :region, :taxon, :type, :id, :desc, :seq, :length
-                    );
-                    """,
-                    {
-                        "region": region_name,
-                        "taxon": taxon_name,
-                        "type": seq_type,
-                        "id": seq_id,
-                        "desc": description,
-                        "seq": sequence,
-                        "length": seq_len,
-                    },
-                )
-            return True
-        except sqlite3.IntegrityError:
-            return False
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO sequence_records (
+                region_name, taxon_name, seq_type, seq_id, description, sequence, seq_len
+            ) VALUES (
+                :region, :taxon, :type, :id, :desc, :seq, :length
+            );
+            """,
+            {
+                "region": region_name,
+                "taxon": taxon_name,
+                "type": seq_type,
+                "id": seq_id,
+                "desc": description,
+                "seq": sequence,
+                "length": seq_len,
+            },
+        )
+        inserted = cursor.rowcount > 0
+        if not self._in_transaction:
+            self._conn.commit()
+        return inserted
 
     def add_seqrecord(
         self,
@@ -157,7 +198,8 @@ class DiskBackedFeatureStore:
     def has_region(self, region_name: str) -> bool:
         cursor = self._conn.cursor()
         cursor.execute(
-            "SELECT 1 FROM regions WHERE region_name = :name AND is_active = 1 LIMIT 1;",
+            "SELECT 1 FROM regions WHERE region_name = :name AND is_active = 1"
+            " LIMIT 1;",
             {"name": region_name},
         )
         return cursor.fetchone() is not None
@@ -167,20 +209,22 @@ class DiskBackedFeatureStore:
         order_clause = "insertion_order ASC" if order == "seq" else "region_name ASC"
         cursor = self._conn.cursor()
         cursor.execute(
-            f"SELECT region_name FROM regions WHERE is_active = 1 ORDER BY {order_clause};"
+            f"SELECT region_name FROM regions WHERE is_active = 1 ORDER BY"
+            f" {order_clause};"
         )
         return [row[0] for row in cursor.fetchall()]
 
     def remove_region(self, region_name: str) -> None:
         """Mark a region as inactive."""
-        with self._conn:
-            self._conn.execute(
-                "UPDATE regions SET is_active = 0 WHERE region_name = :name;",
-                {"name": region_name},
-            )
+        self._conn.execute(
+            "UPDATE regions SET is_active = 0 WHERE region_name = :name;",
+            {"name": region_name},
+        )
+        if not self._in_transaction:
+            self._conn.commit()
 
     def get_records(self, region_name: str, seq_type: str = "nucl") -> list[SeqRecord]:
-        """Retrieve hydrated SeqRecord list for a region."""
+        """Hydrate SeqRecord instances on demand for a single region."""
         cursor = self._conn.cursor()
         cursor.execute(
             """

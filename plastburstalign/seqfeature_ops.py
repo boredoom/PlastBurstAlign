@@ -58,29 +58,31 @@ class PlastidData:
         is_igs = isinstance(pdict, IntergenicDict)
         inv_map = getattr(pdict, "feat_name_inv_map", {})
 
-        for feat_name, records in pdict.items():
-            inv_name = inv_map.get(feat_name) if is_igs else None
-            for rec in records:
-                self.store.add_seqrecord(
-                    region_name=feat_name,
-                    taxon_name=str(rec.id),
-                    seq_type="nucl",
-                    record=rec,
-                    inv_name=inv_name,
-                )
+        with self.store.transaction():
+            for feat_name, records in pdict.items():
+                inv_name = inv_map.get(feat_name) if is_igs else None
+                for rec in records:
+                    self.store.add_seqrecord(
+                        region_name=feat_name,
+                        taxon_name=str(rec.id),
+                        seq_type="nucl",
+                        record=rec,
+                        inv_name=inv_name,
+                    )
 
     def add_proteins(self, pdict: "PlastidDict"):
         """Merges extracted proteins into the disk store."""
         if not self.mode.collects_proteins():
             return
-        for feat_name, records in pdict.items():
-            for rec in records:
-                self.store.add_seqrecord(
-                    region_name=feat_name,
-                    taxon_name=str(rec.id),
-                    seq_type="prot",
-                    record=rec,
-                )
+        with self.store.transaction():
+            for feat_name, records in pdict.items():
+                for rec in records:
+                    self.store.add_seqrecord(
+                        region_name=feat_name,
+                        taxon_name=str(rec.id),
+                        seq_type="prot",
+                        record=rec,
+                    )
 
     def set_order_map(self):
         order_list = self.store.get_active_regions(self.order)
