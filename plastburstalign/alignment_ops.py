@@ -182,11 +182,12 @@ class AlignmentCoordination:
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment
         max_in_flight = num_workers * 2
+        sorted_regions = self._get_lpt_sorted_regions(prefix="nucl")
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for k, future in bounded_submit_iterator(
                 executor,
                 single_nuc_MSA,
-                self.plastid_data.nucleotides.keys(),
+                sorted_regions,
                 max_in_flight=max_in_flight,
             ):
                 try:
@@ -312,11 +313,12 @@ class AlignmentCoordination:
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation with bounded queue
         max_in_flight = num_workers * 2
+        sorted_regions = self._get_lpt_sorted_regions(prefix="prot")
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for k, future in bounded_submit_iterator(
                 executor,
                 single_prot_MSA,
-                self.plastid_data.nucleotides.keys(),
+                sorted_regions,
                 max_in_flight=max_in_flight,
             ):
                 try:
@@ -461,6 +463,33 @@ class AlignmentCoordination:
 
         log.info(" writing concatenation to file in NEXUS and FASTA formats")
         _concat_sync()
+
+    def _get_lpt_sorted_regions(self, prefix: str = "nucl") -> list[str]:
+        """Sort region keys in descending order of input file size (Longest Processing Time first).
+
+        Ties are broken alphabetically by region name to guarantee deterministic
+        scheduling.
+        """
+        out_dir = self.user_params.get("out_dir", "")
+        keys = list(self.plastid_data.nucleotides.keys())
+
+        def task_weight(k: str) -> tuple[int, str]:
+            path = os.path.join(out_dir, f"{prefix}_{k}.unalign.fasta")
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            # Negative size for descending sort; region name for ascending tie-break
+            return (-size, k)
+
+        sorted_keys = sorted(keys, key=task_weight)
+        if sorted_keys:
+            top_tasks = [f"{k} ({abs(task_weight(k)[0])} B)" for k in sorted_keys[:3]]
+            log.debug(
+                f"LPT scheduling active ({len(sorted_keys)} tasks). Heaviest:"
+                f" {', '.join(top_tasks)}"
+            )
+        return sorted_keys
 
 
 # -----------------------------------------------------------------#
