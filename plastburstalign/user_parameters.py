@@ -48,6 +48,7 @@ class UserParameters(Dict[str, Any]):
         config_file: Optional[str] = None,
         include_trna: bool = True,
         include_rrna: bool = True,
+        adaptive_heuristics: bool = True,
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -94,6 +95,7 @@ class UserParameters(Dict[str, Any]):
         self._set_alignment_tool_config(alignment_tool_config)
         self._set_alignment_command(alignment_command)
         self._set_config_file(config_file)
+        self._set_adaptive_heuristics(adaptive_heuristics)
 
     def _set_select_mode(self, select_mode: str):
         try:
@@ -243,6 +245,10 @@ class UserParameters(Dict[str, Any]):
             log.warning(f"Specified config file does not exist: {config_file}")
         self["config_file"] = config_file
 
+    def _set_adaptive_heuristics(self, adaptive_heuristics: bool):
+        self._test_type("adaptive_heuristics", adaptive_heuristics, bool)
+        self["adaptive_heuristics"] = adaptive_heuristics
+
     @staticmethod
     def _test_type(param_name: str, param_val: Any, expected_type: Any):
         if not isinstance(param_val, expected_type):
@@ -271,6 +277,8 @@ class UserParametersScript(UserParameters):
         "alignmentcommand": "alignment_command",
         "alignmentcmd": "alignment_command",
         "config": "config_file",
+        "adaptive_heuristics": "adaptive_heuristics",
+        "adaptiveheuristics": "adaptive_heuristics",
     }
 
     def __init__(self):
@@ -468,6 +476,16 @@ class UserParametersScript(UserParameters):
             type=str,
             required=False,
             help="(Optional) Path to YAML config file containing parameters",
+        )
+        parser.add_argument(
+            "--adaptiveheuristics",
+            dest="adaptive_heuristics",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help=(
+                "Enable adaptive PartTree heuristics for massive datasets (>1,000"
+                " sequences) (default: enabled)"
+            ),
         )
         return parser
 

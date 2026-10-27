@@ -54,6 +54,7 @@ class AlignmentTool(ABC):
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
         """Align sequences from input_file and write result to output_file.
 
@@ -73,9 +74,12 @@ class AlignmentTool(ABC):
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
         """Alias for align() for backward compatibility."""
-        return self.align(input_file, output_file, threads=threads)
+        return self.align(
+            input_file, output_file, threads=threads, sequence_count=sequence_count
+        )
 
     def _get_tool_params(self, user_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Extract tool-specific parameters from user parameters."""
@@ -116,7 +120,10 @@ class AlignmentTool(ABC):
 
 
 class MAFFT(AlignmentTool):
-    """MAFFT alignment tool implementation."""
+    """MAFFT alignment tool implementation with adaptive mega-taxa heuristics."""
+
+    PARTTREE_THRESHOLD_DEFAULT = 1000
+    RETREE1_THRESHOLD_DEFAULT = 5000
 
     def _find_tool(self):
         """Search for MAFFT in system PATH."""
@@ -126,51 +133,113 @@ class MAFFT(AlignmentTool):
         else:
             log.info("MAFFT not found in system PATH")
 
+    @staticmethod
+    def _count_sequences_fast(input_file: str) -> int:
+        """Fast binary scan to count records in an unaligned FASTA file without parsing objects."""
+        count = 0
+        try:
+            with open(input_file, "rb") as f:
+                for line in f:
+                    if line.startswith(b">"):
+                        count += 1
+        except OSError:
+            pass
+        return count
+
+    def _build_command(
+        self,
+        input_file: str,
+        threads: int | None = None,
+        sequence_count: int | None = None,
+    ) -> list[str]:
+        """Build MAFFT command line arguments with adaptive heuristics for massive datasets."""
+        cmd = [self.exec_path]
+
+        # Check whether adaptive heuristics are enabled (default: True)
+        adaptive_enabled = self.tool_params.get(
+            "adaptive_heuristics",
+            self.user_params.get("adaptive_heuristics", True),
+        )
+        parttree_threshold = int(
+            self.tool_params.get("parttree_threshold", self.PARTTREE_THRESHOLD_DEFAULT)
+        )
+        retree1_threshold = int(
+            self.tool_params.get("retree1_threshold", self.RETREE1_THRESHOLD_DEFAULT)
+        )
+
+        explicit_algorithm = self.tool_params.get("algorithm")
+
+        # If algorithm was explicitly requested (e.g. localpair, globalpair, retree), honor it directly
+        if explicit_algorithm and explicit_algorithm != "auto":
+            if explicit_algorithm == "localpair":
+                cmd.append("--localpair")
+            elif explicit_algorithm == "globalpair":
+                cmd.append("--globalpair")
+            elif explicit_algorithm == "genafpair":
+                cmd.append("--genafpair")
+            elif explicit_algorithm == "retree":
+                retree_num = self.tool_params.get("retree", 1)
+                cmd.extend(["--retree", str(retree_num)])
+            elif explicit_algorithm == "maxiterate":
+                maxiterate_num = self.tool_params.get("maxiterate", 0)
+                cmd.extend(["--maxiterate", str(maxiterate_num)])
+        else:
+            # Adaptive PartTree heuristics for massive datasets
+            n_seq = (
+                sequence_count
+                if sequence_count is not None
+                else self._count_sequences_fast(input_file)
+            )
+
+            if adaptive_enabled and n_seq >= parttree_threshold:
+                cmd.append("--parttree")
+                if n_seq >= retree1_threshold:
+                    cmd.extend(["--retree", "1"])
+                    log.info(
+                        f"      adaptive heuristic (N={n_seq} >= {retree1_threshold}):"
+                        " applied MAFFT NW-NS-PartTree1 (--parttree --retree 1)"
+                    )
+                else:
+                    cmd.extend(["--retree", "2"])
+                    log.info(
+                        f"      adaptive heuristic (N={n_seq} >= {parttree_threshold}):"
+                        " applied MAFFT NW-NS-PartTree2 (--parttree --retree 2)"
+                    )
+            else:
+                cmd.append("--auto")
+
+        # Prioritize dynamically leased threads, falling back to tool_params
+        mafft_threads = (
+            threads if threads is not None else self.tool_params.get("threads", 1)
+        )
+        cmd.extend(["--thread", str(mafft_threads)])
+
+        # Add other MAFFT options
+        if self.tool_params.get("adjustdirection", True):
+            cmd.append("--adjustdirection")
+
+        if self.tool_params.get("quiet"):
+            cmd.append("--quiet")
+
+        # Add input file
+        cmd.append(input_file)
+        return cmd
+
     def align(
         self,
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
-        """Perform alignment using MAFFT."""
+        """Perform alignment using MAFFT with dynamic threads and adaptive heuristics."""
         if not self._validate_input(input_file, output_file):
             return False
 
         try:
-            cmd = [self.exec_path]
-
-            # Add algorithm option (default: --auto)
-            algorithm = self.tool_params.get("algorithm", "auto")
-            if algorithm == "auto":
-                cmd.append("--auto")
-            elif algorithm == "localpair":
-                cmd.append("--localpair")
-            elif algorithm == "globalpair":
-                cmd.append("--globalpair")
-            elif algorithm == "genafpair":
-                cmd.append("--genafpair")
-            elif algorithm == "retree":
-                retree_num = self.tool_params.get("retree", 1)
-                cmd.extend(["--retree", str(retree_num)])
-            elif algorithm == "maxiterate":
-                maxiterate_num = self.tool_params.get("maxiterate", 0)
-                cmd.extend(["--maxiterate", str(maxiterate_num)])
-
-            # Prioritize dynamically leased threads, falling back to tool_params
-            mafft_threads = (
-                threads if threads is not None else self.tool_params.get("threads", 1)
+            cmd = self._build_command(
+                input_file, threads=threads, sequence_count=sequence_count
             )
-            cmd.extend(["--thread", str(mafft_threads)])
-
-            # Add other MAFFT options
-            if self.tool_params.get("adjustdirection", True):
-                cmd.append("--adjustdirection")
-
-            if self.tool_params.get("quiet"):
-                cmd.append("--quiet")
-
-            # Add input file
-            cmd.append(input_file)
 
             with open(output_file, "w") as out_handle:
                 process = subprocess.run(
@@ -183,7 +252,7 @@ class MAFFT(AlignmentTool):
             if process.returncode == 0:
                 log.info(
                     f"      successfully aligned {os.path.basename(input_file)} using"
-                    f" MAFFT with {mafft_threads} threads"
+                    f" MAFFT ({' '.join(cmd[1:])})"
                 )
                 return True
             else:
@@ -210,6 +279,7 @@ class ClustalOmega(AlignmentTool):
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
         """Perform alignment using Clustal Omega."""
         if not self._validate_input(input_file, output_file):
@@ -277,6 +347,7 @@ class MUSCLE(AlignmentTool):
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
         """Perform alignment using MUSCLE v5."""
         if not self._validate_input(input_file, output_file):
@@ -404,6 +475,7 @@ class GenericAlignmentTool(AlignmentTool):
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
         if not self._validate_input(input_file, output_file):
             return False
@@ -536,6 +608,7 @@ class CustomAligner(AlignmentTool):
         input_file: str,
         output_file: str,
         threads: int | None = None,
+        sequence_count: int | None = None,
     ) -> bool:
         if not os.path.exists(input_file):
             log.error(f"Input file does not exist: {input_file}")

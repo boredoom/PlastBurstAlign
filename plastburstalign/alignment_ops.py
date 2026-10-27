@@ -105,6 +105,12 @@ class AlignmentCoordination:
         self._aligned_saved = True
 
     def _nuc_MSA(self):
+        # Pre-fetch region taxon counts in one O(1) bulk query
+        try:
+            region_summary = self.plastid_data.store.get_region_summary(seq_type="nucl")
+        except Exception:
+            region_summary = {}
+
         raw_threads = self.user_params.get("num_threads", 1)
         try:
             num_workers = int(raw_threads)
@@ -121,14 +127,17 @@ class AlignmentCoordination:
             log.critical("No items in nucleotide main dictionary to process")
             raise RuntimeError("No items in nucleotide main dictionary to process")
 
-        # Detect if the aligner implementation supports dynamic thread allocation
+        # Detect supported parameters on the aligner interface
         try:
             align_params = inspect.signature(self.aligner.align).parameters
-            supports_threads = "threads" in align_params or any(
+            has_var_keyword = any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in align_params.values()
             )
+            supports_threads = "threads" in align_params or has_var_keyword
+            supports_seq_count = "sequence_count" in align_params or has_var_keyword
         except (ValueError, TypeError):
             supports_threads = False
+            supports_seq_count = False
 
         total_tasks = len(self.plastid_data.nucleotides)
         budget_pool = CoreBudgetPool(
@@ -153,17 +162,21 @@ class AlignmentCoordination:
                 if os.path.exists(out_fn_unalign_nucl)
                 else 0
             )
+            seq_count = region_summary.get(k, {}).get("count")
+
             try:
                 with budget_pool.lease(file_size=file_size) as leased_threads:
-                    # Step 1. Align matrices via third-party alignment tool
+                    # Dynamically pass supported arguments
+                    align_kwargs: dict[str, Any] = {}
                     if supports_threads:
-                        self.aligner.align(
-                            out_fn_unalign_nucl,
-                            out_fn_aligned_nucl,
-                            threads=leased_threads,
-                        )
-                    else:
-                        self.aligner.align(out_fn_unalign_nucl, out_fn_aligned_nucl)
+                        align_kwargs["threads"] = leased_threads
+                    if supports_seq_count and seq_count is not None:
+                        align_kwargs["sequence_count"] = seq_count
+
+                    # Step 1. Align matrices via third-party alignment tool
+                    self.aligner.align(
+                        out_fn_unalign_nucl, out_fn_aligned_nucl, **align_kwargs
+                    )
             finally:
                 budget_pool.task_completed()
 
@@ -180,7 +193,7 @@ class AlignmentCoordination:
 
         ### Inner Function - End ###
 
-        # Step 2. Use ThreadPoolExecutor to parallelize alignment
+        # Step 2. Use ThreadPoolExecutor to parallelize alignment with LPT ordering
         max_in_flight = num_workers * 2
         sorted_regions = self._get_lpt_sorted_regions(prefix="nucl")
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -196,6 +209,12 @@ class AlignmentCoordination:
                     log.error(f"{k!r} generated an exception: {e}")
 
     def _prot_MSA(self):
+        # Pre-fetch region taxon counts in one O(1) bulk query
+        try:
+            region_summary = self.plastid_data.store.get_region_summary(seq_type="prot")
+        except Exception:
+            region_summary = {}
+
         raw_threads = self.user_params.get("num_threads", 1)
         try:
             num_workers = int(raw_threads)
@@ -213,14 +232,17 @@ class AlignmentCoordination:
             log.critical("No items in nucleotide main dictionary to process")
             raise RuntimeError("No items in nucleotide main dictionary to process")
 
-        # Detect if the aligner implementation supports dynamic thread allocation
+        # Detect supported parameters on the aligner interface
         try:
             align_params = inspect.signature(self.aligner.align).parameters
-            supports_threads = "threads" in align_params or any(
+            has_var_keyword = any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in align_params.values()
             )
+            supports_threads = "threads" in align_params or has_var_keyword
+            supports_seq_count = "sequence_count" in align_params or has_var_keyword
         except (ValueError, TypeError):
             supports_threads = False
+            supports_seq_count = False
 
         total_tasks = len(self.plastid_data.nucleotides)
         budget_pool = CoreBudgetPool(
@@ -251,17 +273,21 @@ class AlignmentCoordination:
                 if os.path.exists(out_fn_unalign_prot)
                 else 0
             )
+            seq_count = region_summary.get(k, {}).get("count")
+
             try:
                 with budget_pool.lease(file_size=file_size) as leased_threads:
-                    # Step 1. Align matrices based on their PROTEIN sequences via third-party alignment tool
+                    # Dynamically pass supported arguments
+                    align_kwargs: dict[str, Any] = {}
                     if supports_threads:
-                        self.aligner.align(
-                            out_fn_unalign_prot,
-                            out_fn_aligned_prot,
-                            threads=leased_threads,
-                        )
-                    else:
-                        self.aligner.align(out_fn_unalign_prot, out_fn_aligned_prot)
+                        align_kwargs["threads"] = leased_threads
+                    if supports_seq_count and seq_count is not None:
+                        align_kwargs["sequence_count"] = seq_count
+
+                    # Step 1. Align matrices based on their PROTEIN sequences via third-party alignment tool
+                    self.aligner.align(
+                        out_fn_unalign_prot, out_fn_aligned_prot, **align_kwargs
+                    )
             finally:
                 budget_pool.task_completed()
 
@@ -311,7 +337,7 @@ class AlignmentCoordination:
 
         ### Inner Function - End ###
 
-        # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation with bounded queue
+        # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation with LPT ordering
         max_in_flight = num_workers * 2
         sorted_regions = self._get_lpt_sorted_regions(prefix="prot")
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
