@@ -126,7 +126,7 @@ class MinNumTaxaTests(unittest.TestCase):
         data_float = PlastidData(params_float)
         data_float.num_taxa = 2  # Total dataset has 2 taxa
         ExtractAndCollect(data_float, params_float)._extract_cds(
-            self.record("taxon1"), data_float.nucleotides
+            self.record("taxon1"), data_float.nucleotides, data_float.proteins
         )
         self.assertIn("psbA", data_float.nucleotides)
 
@@ -138,7 +138,7 @@ class MinNumTaxaTests(unittest.TestCase):
         data_int = PlastidData(params_int)
         data_int.num_taxa = 2
         ExtractAndCollect(data_int, params_int)._extract_cds(
-            self.record("taxon1"), data_int.nucleotides
+            self.record("taxon1"), data_int.nucleotides, data_int.proteins
         )
         self.assertIn("psbA", data_int.nucleotides)
         DataCleaning(data_int, params_int).clean()
@@ -156,6 +156,6 @@ class MinNumTaxaTests(unittest.TestCase):
             with self.subTest(num_taxa=invalid_taxa):
                 data = PlastidData(params)
                 data.num_taxa = invalid_taxa
-                ExtractAndCollect(data, params)._extract_cds(self.record(), data.nucleotides)
+                ExtractAndCollect(data, params)._extract_cds(self.record(), data.nucleotides, data.proteins)
                 with self.assertRaises(AttributeError):
                     DataCleaning(data, params).clean()
