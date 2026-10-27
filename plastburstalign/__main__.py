@@ -1,5 +1,5 @@
-from .user_parameters import UserParametersScript
 from .plast_burst_align import PlastBurstAlign
+from .user_parameters import UserParametersScript
 
 
 def main():

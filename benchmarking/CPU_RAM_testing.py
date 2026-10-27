@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import subprocess
+import sys
 
 
 def test(dataset, nCPUs, mode):
@@ -15,7 +15,9 @@ def test(dataset, nCPUs, mode):
     main_folder = os.path.join(script_dir, dataset)
     print(f"Dataset folder: {main_folder}")
 
-    folder = os.path.join(script_dir, f"{os.path.basename(dataset)}_output_{mode}_{nCPUs}threads")
+    folder = os.path.join(
+        script_dir, f"{os.path.basename(dataset)}_output_{mode}_{nCPUs}threads"
+    )
     print(f"Output folder: {folder}")
     if not os.path.exists(folder):
         os.makedirs(folder)

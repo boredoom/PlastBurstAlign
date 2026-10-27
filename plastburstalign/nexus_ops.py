@@ -37,7 +37,9 @@ class IncrementalNexusAccumulator:
                 self.combined.taxsets[f"{name}.{tn}"] = ts
                 del self.combined.taxsets[tn]
 
-            self.combined.charpartitions = {"combined": {name: list(range(self.combined.nchar))}}
+            self.combined.charpartitions = {
+                "combined": {name: list(range(self.combined.nchar))}
+            }
             return
 
         comb = self.combined
@@ -61,13 +63,17 @@ class IncrementalNexusAccumulator:
 
         for t in both:
             comb_matrix[t] += Seq(
-                str(m_matrix[t]).replace(m.gap, comb.gap).replace(m.missing, comb.missing)
+                str(m_matrix[t])
+                .replace(m.gap, comb.gap)
+                .replace(m.missing, comb.missing)
             )
         for t in combined_only:
             comb_matrix[t] += Seq(comb.missing * m.nchar)
         for t in m_only:
             comb_matrix[t] = Seq(comb.missing * comb.nchar) + Seq(
-                str(m_matrix[t]).replace(m.gap, comb.gap).replace(m.missing, comb.missing)
+                str(m_matrix[t])
+                .replace(m.gap, comb.gap)
+                .replace(m.missing, comb.missing)
             )
 
         comb_taxlabels.extend(m_only)
@@ -78,11 +84,15 @@ class IncrementalNexusAccumulator:
                 comb.taxsets = {}
             comb.taxsets.update({f"{name}.{tn}": ts for tn, ts in m.taxsets.items()})
 
-        comb.charpartitions["combined"][name] = list(range(comb.nchar, comb.nchar + m.nchar))
+        comb.charpartitions["combined"][name] = list(
+            range(comb.nchar, comb.nchar + m.nchar)
+        )
         if m.charlabels:
             if not comb.charlabels:
                 comb.charlabels = {}
-            comb.charlabels.update({comb.nchar + i: label for i, label in m.charlabels.items()})
+            comb.charlabels.update(
+                {comb.nchar + i: label for i, label in m.charlabels.items()}
+            )
         comb.nchar += m.nchar
         comb.ntax += len(m_only)
 

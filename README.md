@@ -143,7 +143,6 @@ params = UserParameters(
 
 burst = PlastBurstAlign(params)
 burst.execute()
-
 ```
 
 ---

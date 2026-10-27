@@ -77,8 +77,12 @@ class DiskBackedFeatureStoreTests(unittest.TestCase):
         self.assertEqual(summary["atpA"]["max_len"], 2)
 
     def test_streaming_fasta_export(self) -> None:
-        self.store.add_record("rbcL", "TaxA", "nucl", "TaxA_rbcL", "TaxA_rbcL desc", "ATGCATGC")
-        self.store.add_record("rbcL", "TaxB", "nucl", "TaxB_rbcL", "TaxB_rbcL desc", "ATGCATGG")
+        self.store.add_record(
+            "rbcL", "TaxA", "nucl", "TaxA_rbcL", "TaxA_rbcL desc", "ATGCATGC"
+        )
+        self.store.add_record(
+            "rbcL", "TaxB", "nucl", "TaxB_rbcL", "TaxB_rbcL desc", "ATGCATGG"
+        )
 
         out_fasta = Path(self.temp_dir.name) / "nucl_rbcL.unalign.fasta"
         count = self.store.export_fasta("rbcL", "nucl", out_fasta)
@@ -113,7 +117,9 @@ class DiskBackedFeatureStoreTests(unittest.TestCase):
 
     def test_context_manager(self) -> None:
         with DiskBackedFeatureStore(Path(self.temp_dir.name) / "ctx.db") as store:
-            self.assertTrue(store.add_record("matK", "TaxonA", "nucl", "id1", "", "ATGC"))
+            self.assertTrue(
+                store.add_record("matK", "TaxonA", "nucl", "id1", "", "ATGC")
+            )
             self.assertTrue(store.has_region("matK"))
 
     def test_feature_store_view_edge_cases(self) -> None:
