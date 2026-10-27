@@ -224,7 +224,9 @@ class DiskBackedFeatureStore:
             for row in cursor.fetchall()
         }
 
-    def export_fasta(self, region_name: str, seq_type: str, out_path: str | Path) -> int:
+    def export_fasta(
+        self, region_name: str, seq_type: str, out_path: str | Path
+    ) -> int:
         """Stream FASTA file straight from disk cursor without hydrating SeqRecord instances."""
         cursor = self._conn.cursor()
         cursor.execute(

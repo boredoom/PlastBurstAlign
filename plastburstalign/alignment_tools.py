@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 from .logging_ops import logger as log
 
@@ -19,7 +19,9 @@ class AlignmentTool(ABC):
     """
 
     def __init__(
-        self, user_params: Optional[Dict[str, Any]] = None, tool_path: Optional[str] = None
+        self,
+        user_params: Optional[Dict[str, Any]] = None,
+        tool_path: Optional[str] = None,
     ):
         """
         Initialize the alignment tool.
@@ -159,7 +161,11 @@ class MAFFT(AlignmentTool):
 
             with open(output_file, "w") as out_handle:
                 process = subprocess.run(
-                    cmd, stdout=out_handle, stderr=subprocess.DEVNULL, text=True, check=False
+                    cmd,
+                    stdout=out_handle,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=False,
                 )
             if process.returncode == 0:
                 log.info(
@@ -223,7 +229,11 @@ class ClustalOmega(AlignmentTool):
 
             log.debug(f"  running Clustal Omega with command: {' '.join(cmd)}")
             process = subprocess.run(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, check=False
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
             )
             if process.returncode == 0:
                 log.info(
@@ -231,7 +241,9 @@ class ClustalOmega(AlignmentTool):
                 )
                 return True
             else:
-                log.error(f"  Clustal Omega failed with return code {process.returncode}")
+                log.error(
+                    f"  Clustal Omega failed with return code {process.returncode}"
+                )
                 return False
         except Exception as e:
             log.error(f"  error during Clustal Omega alignment: {e}")
@@ -293,10 +305,16 @@ class MUSCLE(AlignmentTool):
 
             log.debug(f"  running MUSCLE with command: {' '.join(cmd)}")
             process = subprocess.run(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, check=False
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
             )
             if process.returncode == 0:
-                log.info(f"     successfully aligned {os.path.basename(input_file)} using MUSCLE")
+                log.info(
+                    f"     successfully aligned {os.path.basename(input_file)} using MUSCLE"
+                )
                 return True
             else:
                 log.error(f"  MUSCLE failed with return code {process.returncode}")
@@ -429,7 +447,9 @@ class GenericAlignmentTool(AlignmentTool):
                 )
                 return True
             else:
-                log.error(f"  generic aligner failed with return code {process.returncode}")
+                log.error(
+                    f"  generic aligner failed with return code {process.returncode}"
+                )
                 return False
         except Exception as e:
             log.error(f"  error during generic alignment: {e}")
@@ -437,7 +457,9 @@ class GenericAlignmentTool(AlignmentTool):
 
 
 def get_alignment_tool(
-    tool_name: str, user_params: Optional[Dict[str, Any]] = None, tool_path: Optional[str] = None
+    tool_name: str,
+    user_params: Optional[Dict[str, Any]] = None,
+    tool_path: Optional[str] = None,
 ) -> Optional[AlignmentTool]:
     user_params = user_params or {}
     custom_cmd = user_params.get("alignment_command") or user_params.get(
@@ -445,7 +467,9 @@ def get_alignment_tool(
     ).get("command_template")
 
     # If an explicit command template is given, prioritize CustomAligner
-    if custom_cmd or (isinstance(tool_name, str) and tool_name.lower().strip() == "custom"):
+    if custom_cmd or (
+        isinstance(tool_name, str) and tool_name.lower().strip() == "custom"
+    ):
         return CustomAligner(user_params, tool_path, command_template=custom_cmd)
 
     if not isinstance(tool_name, str) or not tool_name.strip():
@@ -486,7 +510,9 @@ class CustomAligner(AlignmentTool):
         self.command_template = (
             command_template
             or (user_params or {}).get("alignment_command")
-            or (user_params or {}).get("alignment_tool_config", {}).get("command_template")
+            or (user_params or {})
+            .get("alignment_tool_config", {})
+            .get("command_template")
         )
         if not self.command_template:
             raise ValueError("CustomAligner requires a non-empty command template.")
@@ -550,7 +576,9 @@ class CustomAligner(AlignmentTool):
                 return False
 
             if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
-                log.error(f"Alignment completed but output file is missing or empty: {output_file}")
+                log.error(
+                    f"Alignment completed but output file is missing or empty: {output_file}"
+                )
                 return False
 
             log.info(

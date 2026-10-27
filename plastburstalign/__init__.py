@@ -10,11 +10,21 @@ try:
 except ModuleNotFoundError:
     __version__ = date.today()
 
-from .user_parameters import UserParameters
-from .seqfeature_ops import PlastidData
-from .extraction_ops import ExtractAndCollect, DataCleaning
 from .alignment_ops import AlignmentCoordination
+from .alignment_tools import MAFFT, MUSCLE, ClustalOmega
+from .extraction_ops import DataCleaning, ExtractAndCollect
 from .plast_burst_align import PlastBurstAlign
-from .alignment_tools import MAFFT, ClustalOmega, MUSCLE
-__all__ = ['PlastBurstAlign', 'UserParameters', 'PlastidData',
-           'ExtractAndCollect', 'DataCleaning', 'AlignmentCoordination', 'MAFFT', 'ClustalOmega', 'MUSCLE' ]
+from .seqfeature_ops import PlastidData
+from .user_parameters import UserParameters
+
+__all__ = [
+    "PlastBurstAlign",
+    "UserParameters",
+    "PlastidData",
+    "ExtractAndCollect",
+    "DataCleaning",
+    "AlignmentCoordination",
+    "MAFFT",
+    "ClustalOmega",
+    "MUSCLE",
+]

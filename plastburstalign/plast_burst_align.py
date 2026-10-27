@@ -1,14 +1,14 @@
-from typing import Optional, Any, Dict
+from typing import Any, Dict, Optional
+
+from .alignment_ops import AlignmentCoordination
+from .extraction_ops import DataCleaning, ExtractAndCollect
+from .seqfeature_ops import PlastidData
 
 # Package imports
 from .user_parameters import UserParameters
-from .seqfeature_ops import PlastidData
-from .extraction_ops import ExtractAndCollect, DataCleaning
-from .alignment_ops import AlignmentCoordination
 
 
 class PlastBurstAlign:
-
     def __init__(self, user_params: Optional[Dict[str, Any]] = None):
         """
         Coordinates extraction of sequence annotations from GenBank flatfiles,

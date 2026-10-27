@@ -1,13 +1,15 @@
 import argparse
+import math
 import multiprocessing
 import os
 from enum import Enum
-from typing import List, Union, Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
+
 import yaml
-import math
 
 # Package imports
-from .logging_ops import Logger, logger as log
+from .logging_ops import Logger
+from .logging_ops import logger as log
 
 
 class SelectMode(str, Enum):
@@ -216,10 +218,14 @@ class UserParameters(Dict[str, Any]):
 
     def _set_alignment_tool_path(self, alignment_tool_path: Optional[str]):
         if alignment_tool_path and not os.path.exists(alignment_tool_path):
-            log.warning(f"Specified alignment tool path does not exist: {alignment_tool_path}")
+            log.warning(
+                f"Specified alignment tool path does not exist: {alignment_tool_path}"
+            )
         self["alignment_tool_path"] = alignment_tool_path
 
-    def _set_alignment_tool_config(self, alignment_tool_config: Optional[Dict[str, Any]]):
+    def _set_alignment_tool_config(
+        self, alignment_tool_config: Optional[Dict[str, Any]]
+    ):
         if alignment_tool_config is None:
             alignment_tool_config = {}
         self._test_type("alignment_tool_config", alignment_tool_config, dict)
@@ -470,5 +476,7 @@ class UserParametersScript(UserParameters):
         # map the cmd argument names to class constructor parameters,
         # and remove empty argument values (`None`)
         args_dict = vars(args)
-        args_dict = {cls._construct_name_map[k]: v for k, v in args_dict.items() if v is not None}
+        args_dict = {
+            cls._construct_name_map[k]: v for k, v in args_dict.items() if v is not None
+        }
         return args_dict

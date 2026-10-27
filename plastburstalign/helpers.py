@@ -1,5 +1,5 @@
-from concurrent.futures import Executor, Future, wait, FIRST_COMPLETED
-from typing import List, Callable, Iterable, Iterator, Tuple, Any, Optional
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, wait
+from typing import Any, Callable, Iterable, Iterator, List, Optional, Tuple
 
 
 def split_list(input_list: List, num_lists: int) -> List[List]:
@@ -24,7 +24,8 @@ def split_list(input_list: List, num_lists: int) -> List[List]:
 
     # create the first num_lists-1 lists
     nested_list = [
-        input_list[index * list_len : (index + 1) * list_len] for index in range(num_lists - 1)
+        input_list[index * list_len : (index + 1) * list_len]
+        for index in range(num_lists - 1)
     ]
     # create the final list, including the division remainder number of elements
     nested_list.append(input_list[(num_lists - 1) * list_len :])

@@ -37,7 +37,9 @@ class PlastidData:
 
     def _set_proteins(self):
         self.proteins = (
-            FeatureStoreView(self.store, "prot") if self.mode.collects_proteins() else None
+            FeatureStoreView(self.store, "prot")
+            if self.mode.collects_proteins()
+            else None
         )
 
     def _set_files(self, user_params: dict[str, Any]):
@@ -225,7 +227,9 @@ class GeneNameCleaner:
         """
         return feat.qualifiers["gene"][0] if feat.qualifiers.get("gene") else None
 
-    def clean_trna_gene(self, gene: Optional[str], cut_trna: bool = False) -> Optional[str]:
+    def clean_trna_gene(
+        self, gene: Optional[str], cut_trna: bool = False
+    ) -> Optional[str]:
         """
         Standardizes a tRNA gene name by case, delimiter usage, and anticodon.
         If there is no initial gene name (`None`), `None` will be returned.
@@ -374,8 +378,12 @@ class PlastidFeature:
             A string describing the `SeqRecord` status.
 
         """
-        message = f"skipped due to {self._exception}" if self._exception else "successful"
-        status = f"parsing of {self._type} '{self.feat_name}' in {self.rec_name} {message}"
+        message = (
+            f"skipped due to {self._exception}" if self._exception else "successful"
+        )
+        status = (
+            f"parsing of {self._type} '{self.feat_name}' in {self.rec_name} {message}"
+        )
         return status
 
     def log_exception(self):
@@ -437,7 +445,10 @@ class ProteinFeature(GeneFeature):
     _default_exception = "potential reading frame error of this feature in input file"
 
     def __init__(
-        self, record: SeqRecord = None, feature: SeqFeature = None, gene: GeneFeature = None
+        self,
+        record: SeqRecord = None,
+        feature: SeqFeature = None,
+        gene: GeneFeature = None,
     ):
         """
         Primarily a wrapper for a protein `SeqRecord` that can be accessed by `get_record()`.
@@ -466,7 +477,9 @@ class ProteinFeature(GeneFeature):
             return
 
         try:
-            self.seq_obj = self.seq_obj.translate(table=11)  # Getting error TTA is not stop codon.
+            self.seq_obj = self.seq_obj.translate(
+                table=11
+            )  # Getting error TTA is not stop codon.
         except Exception as e:
             self._set_exception(e)
 
@@ -507,7 +520,9 @@ class IntergenicFeature(PlastidFeature):
     _type = "intergenic spacer"
     _default_exception = "negative intergenic length in input file"
 
-    def __init__(self, record: SeqRecord, current_feat: SeqFeature, subsequent_feat: SeqFeature):
+    def __init__(
+        self, record: SeqRecord, current_feat: SeqFeature, subsequent_feat: SeqFeature
+    ):
         """
         Primarily a wrapper for an intergenic spacer `SeqRecord` that can be accessed by `get_record()`.
         It contains other variables and methods that document the creation of the `SeqRecord`.
@@ -529,7 +544,9 @@ class IntergenicFeature(PlastidFeature):
         self.start_pos = ExactPosition(current_feat.location.end)  # +1)
         self.end_pos = ExactPosition(self.subsequent_feat.location.start)
         self.feature = (
-            FeatureLocation(self.start_pos, self.end_pos) if self.start_pos < self.end_pos else None
+            FeatureLocation(self.start_pos, self.end_pos)
+            if self.start_pos < self.end_pos
+            else None
         )
         self.default_exception = (
             f"{IntergenicFeature._default_exception}"

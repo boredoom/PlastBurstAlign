@@ -63,11 +63,15 @@ class AlignmentCoordination:
 
         for feat_name in self.plastid_data.nucleotides.keys():
             try:
-                out_fn_unalign_nucl = os.path.join(out_dir, f"nucl_{feat_name}.unalign.fasta")
+                out_fn_unalign_nucl = os.path.join(
+                    out_dir, f"nucl_{feat_name}.unalign.fasta"
+                )
                 store.export_fasta(feat_name, "nucl", out_fn_unalign_nucl)
 
                 if collect_proteins:
-                    out_fn_unalign_prot = os.path.join(out_dir, f"prot_{feat_name}.unalign.fasta")
+                    out_fn_unalign_prot = os.path.join(
+                        out_dir, f"prot_{feat_name}.unalign.fasta"
+                    )
                     store.export_fasta(feat_name, "prot", out_fn_unalign_prot)
             except Exception as e:
                 log.error(f"Error saving {feat_name}: {e}")
@@ -84,7 +88,9 @@ class AlignmentCoordination:
         then back-translated to a nucleotide matrix before saving to file.
         """
         if not self.aligner or not self.aligner.exec_path:
-            log.error("unable to align regions; alignment tool is not properly configured")
+            log.error(
+                "unable to align regions; alignment tool is not properly configured"
+            )
             return
         elif not self._unaligned_saved:
             self.save_unaligned()
@@ -115,10 +121,15 @@ class AlignmentCoordination:
             # Step 1. Align matrices via third-party alignment tool
             self.aligner.align(out_fn_unalign_nucl, out_fn_aligned_nucl)
             # Report whether the aligner produced output
-            if os.path.exists(out_fn_aligned_nucl) and os.path.getsize(out_fn_aligned_nucl) > 0:
+            if (
+                os.path.exists(out_fn_aligned_nucl)
+                and os.path.getsize(out_fn_aligned_nucl) > 0
+            ):
                 log.debug(f"Alignment successful for `{k}` -> {out_fn_aligned_nucl}")
             else:
-                log.warning(f"Alignment for `{k}` produced no output: {out_fn_aligned_nucl}")
+                log.warning(
+                    f"Alignment for `{k}` produced no output: {out_fn_aligned_nucl}"
+                )
 
         ### Inner Function - End ###
 
@@ -167,8 +178,13 @@ class AlignmentCoordination:
             # Step 1. Align matrices based on their PROTEIN sequences via third-party alignment tool
             self.aligner.align(out_fn_unalign_prot, out_fn_aligned_prot)
             # Report whether the protein aligner produced output
-            if os.path.exists(out_fn_aligned_prot) and os.path.getsize(out_fn_aligned_prot) > 0:
-                log.debug(f"Protein alignment successful for `{k}` -> {out_fn_aligned_prot}")
+            if (
+                os.path.exists(out_fn_aligned_prot)
+                and os.path.getsize(out_fn_aligned_prot) > 0
+            ):
+                log.debug(
+                    f"Protein alignment successful for `{k}` -> {out_fn_aligned_prot}"
+                )
             else:
                 log.warning(
                     f"Protein alignment for `{k}` produced no output: {out_fn_aligned_prot}"
@@ -181,14 +197,21 @@ class AlignmentCoordination:
                 )
                 translator.backtranslate()
                 # Report whether back-translation produced nucleotide alignment
-                if os.path.exists(out_fn_aligned_nucl) and os.path.getsize(out_fn_aligned_nucl) > 0:
-                    log.debug(f"Back-translation successful for `{k}` -> {out_fn_aligned_nucl}")
+                if (
+                    os.path.exists(out_fn_aligned_nucl)
+                    and os.path.getsize(out_fn_aligned_nucl) > 0
+                ):
+                    log.debug(
+                        f"Back-translation successful for `{k}` -> {out_fn_aligned_nucl}"
+                    )
                 else:
                     log.warning(
                         f"Back-translation produced no output for `{k}`: {out_fn_aligned_nucl}"
                     )
             except Exception as err:
-                log.warning(f"Unable to conduct back-translation of `{k}`. Error message: {err}.")
+                log.warning(
+                    f"Unable to conduct back-translation of `{k}`. Error message: {err}."
+                )
 
         ### Inner Function - End ###
 
@@ -223,7 +246,8 @@ class AlignmentCoordination:
             f"converting all successful alignments to NEXUS format using {self.user_params.get('num_threads')} threads"
         )
         msa_lists = split_list(
-            list(self.plastid_data.nucleotides.keys()), self.user_params.get("num_threads") * 2
+            list(self.plastid_data.nucleotides.keys()),
+            self.user_params.get("num_threads") * 2,
         )
         # Use ThreadPoolExecutor for I/O-bound file conversions
         num_workers = self.user_params.get("num_threads")
@@ -243,10 +267,14 @@ class AlignmentCoordination:
 
         def _convert_FASTA_to_NEXUS(msa_name: str) -> str | None:
             fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
-            aligned_nucl_fasta = os.path.join(fasta_dir, f"nucl_{msa_name}.aligned.fasta")
+            aligned_nucl_fasta = os.path.join(
+                fasta_dir, f"nucl_{msa_name}.aligned.fasta"
+            )
             nexus_dir = os.path.join(self.user_params.get("out_dir"), "nexus")
             os.makedirs(nexus_dir, exist_ok=True)
-            aligned_nucl_nexus = os.path.join(nexus_dir, f"nucl_{msa_name}.aligned.nexus")
+            aligned_nucl_nexus = os.path.join(
+                nexus_dir, f"nucl_{msa_name}.aligned.nexus"
+            )
             try:
                 AlignIO.convert(
                     aligned_nucl_fasta,
@@ -257,7 +285,9 @@ class AlignmentCoordination:
                 )
                 return aligned_nucl_nexus
             except Exception:
-                log.warning(f"Unable to convert alignment of `{msa_name}` from FASTA to NEXUS.")
+                log.warning(
+                    f"Unable to convert alignment of `{msa_name}` from FASTA to NEXUS."
+                )
                 return None
 
         success_list = []
@@ -306,15 +336,19 @@ class AlignmentCoordination:
             nexus_string = re.sub(gene_name_pattern, "\nconcat_", nexus_string)
             return NexusAlignment(nexus_string)
 
-        log.info(f"concatenating all successful alignments in `{self.plastid_data.order}` order")
+        log.info(
+            f"concatenating all successful alignments in `{self.plastid_data.order}` order"
+        )
         self.plastid_data.set_order_map()
         self.success_list.sort(key=lambda t: self.plastid_data.order_map[t[0]])
 
         out_fn_nucl_concat_fasta = os.path.join(
-            self.user_params.get("out_dir"), f"nucl_{num_successful}concat.aligned.fasta"
+            self.user_params.get("out_dir"),
+            f"nucl_{num_successful}concat.aligned.fasta",
         )
         out_fn_nucl_concat_nexus = os.path.join(
-            self.user_params.get("out_dir"), f"nucl_{num_successful}concat.aligned.nexus"
+            self.user_params.get("out_dir"),
+            f"nucl_{num_successful}concat.aligned.nexus",
         )
 
         try:
@@ -393,11 +427,15 @@ class BackTranslation:
                 f"tripled {len(p) * 3} vs ungapped nucleotide {len(nuc)}."
             )
             if t.endswith(p):
-                debug += f"\nThere are {len(t) - len(p)} extra nucleotides at the start."
+                debug += (
+                    f"\nThere are {len(t) - len(p)} extra nucleotides at the start."
+                )
             elif t.startswith(p):
                 debug += f"\nThere are {len(t) - len(p)} extra nucleotides at the end."
             elif p in t:
-                debug += "\nHowever, protein sequence found within translated nucleotides."
+                debug += (
+                    "\nHowever, protein sequence found within translated nucleotides."
+                )
             elif p[1:] in t:
                 debug += "\nHowever, ignoring first amino acid, protein sequence found within translated nucleotides."
             log.debug(debug)
@@ -405,7 +443,10 @@ class BackTranslation:
         if t == p:
             return nuc
         elif p.startswith("M") and "M" + t[1:] == p:
-            if str(nuc[0:3]).upper() in ambiguous_generic_by_id[self.table].start_codons:
+            if (
+                str(nuc[0:3]).upper()
+                in ambiguous_generic_by_id[self.table].start_codons
+            ):
                 return nuc
             else:
                 log.debug(
@@ -458,7 +499,9 @@ class BackTranslation:
                 f"tripled {len(ungapped_protein) * 3} vs "
                 f"ungapped nucleotide {len(ungapped_nucleotide)}"
             )
-            log.warning(f"Backtranslation failed for {identifier} due to ungapped length mismatch")
+            log.warning(
+                f"Backtranslation failed for {identifier} due to ungapped length mismatch"
+            )
         if ungapped_nucleotide is None:
             return None
 
@@ -476,7 +519,9 @@ class BackTranslation:
                 f"Nucleotide sequence for {unaligned_nucleotide_record.id} "
                 f"longer than protein {aligned_protein_record.id}"
             )
-            log.warning(f"Backtranslation failed for {identifier} due to unaligned length mismatch")
+            log.warning(
+                f"Backtranslation failed for {identifier} due to unaligned length mismatch"
+            )
             return None
 
         aligned_nuc = unaligned_nucleotide_record[:]  # copy for most annotation
@@ -490,7 +535,9 @@ class BackTranslation:
                 f"but protein sequence {aligned_protein_record.seq} is length {len(aligned_protein_record.seq)} "
                 f"(3 * {len(aligned_nuc)} != {len(aligned_protein_record.seq)})"
             )
-            log.warning(f"Backtranslation failed for {identifier} due to aligned length mismatch")
+            log.warning(
+                f"Backtranslation failed for {identifier} due to aligned length mismatch"
+            )
             return None
 
         return aligned_nuc
