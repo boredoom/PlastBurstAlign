@@ -51,27 +51,3 @@ plastburstalign = "plastburstalign.__main__:main"
 [project.urls]
 Homepage = "https://gruenstaeudl-lab.com/"
 Repository = "https://github.com/michaelgruenstaeudl/PlastBurstAlign"
-
-[tool.mypy]
-python_version = "3.11"
-ignore_missing_imports = true
-follow_imports = "silent"
-check_untyped_defs = true
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.ruff.lint]
-ignore = ["BLE001"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v -p no:cov"
-
-[tool.coverage.run]
-source = ["plastburstalign"]
-omit = ["tests/*", "benchmarking/*"]
-
-[tool.coverage.report]
-show_missing = true

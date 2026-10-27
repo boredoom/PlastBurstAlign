@@ -39,9 +39,7 @@ with tarfile.open(out_file, "r:gz") as tar:
 
 # Ensure main_folder exists
 if not os.path.isdir(main_folder):
-    extracted_dirs = [
-        d for d in os.listdir(script_dir) if os.path.isdir(os.path.join(script_dir, d))
-    ]
+    extracted_dirs = [d for d in os.listdir(script_dir) if os.path.isdir(os.path.join(script_dir, d))]
     main_folder = os.path.join(script_dir, extracted_dirs[0])
 print(f"Using dataset folder: {main_folder}")
 
@@ -71,28 +69,12 @@ for d in dirs_to_create:
 print("Running plastburstalign module ...")
 os.chdir(mod_path)
 run_start = time.time()
-subprocess.run(
-    [
-        sys.executable,
-        "-m",
-        "plastburstalign",
-        "-i",
-        main_folder,
-        "-o",
-        folder_IGS,
-        "-s",
-        "igs",
-        "-t",
-        "5",
-        "-l",
-        "6",
-        "-n",
-        nCPUs,
-    ],
-    check=True,
-)
+subprocess.run([
+    sys.executable, "-m", "plastburstalign",
+    "-i", main_folder, "-o", folder_IGS,
+    "-s", "igs", "-t", "5", "-l", "6", "-n", nCPUs
+], check=True)
 run_end = time.time()
-
 
 # ----------------------------
 # Step 5: Organize output files
@@ -101,14 +83,9 @@ def move_files(pattern, dest_folder):
     for f in glob.glob(pattern):
         shutil.move(f, dest_folder)
 
-
 move_files(os.path.join(folder_IGS, "*.unalign.fasta"), os.path.join(folder_IGS, "01_unalign"))
-move_files(
-    os.path.join(folder_IGS, "*.aligned.fasta"), os.path.join(folder_IGS, "02_aligned", "fasta")
-)
-move_files(
-    os.path.join(folder_IGS, "*.aligned.nexus"), os.path.join(folder_IGS, "02_aligned", "nexus")
-)
+move_files(os.path.join(folder_IGS, "*.aligned.fasta"), os.path.join(folder_IGS, "02_aligned", "fasta"))
+move_files(os.path.join(folder_IGS, "*.aligned.nexus"), os.path.join(folder_IGS, "02_aligned", "nexus"))
 
 # ----------------------------
 # Step 6: Cleanup (optional)

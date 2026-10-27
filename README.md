@@ -61,7 +61,7 @@ The software `plastburstalign` addresses these and other challenges: it provides
 ### Installation on Linux (Debian)
 ```bash
 # Installation
-#pip install git+https://github.com/michaelgruenstaeudl/PlastBurstAlign.git
+#pip install git+https://github.com/michaelgruenstaeudl/PlastBurstAlign.git  
 #pip3 install git+ssh://git@github.com/michaelgruenstaeudl/PlastBurstAlign.git
 
 pip install plastburstalign
