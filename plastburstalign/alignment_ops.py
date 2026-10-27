@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -19,6 +20,7 @@ from .helpers import bounded_submit_iterator, split_list
 from .logging_ops import logger as log
 from .nexus_ops import ConcatenationError, IncrementalNexusAccumulator
 from .seqfeature_ops import PlastidData
+from .task_queue import CoreBudgetPool
 
 # ===================================================================
 # Module-level helper functions for multiprocessing
@@ -103,9 +105,36 @@ class AlignmentCoordination:
         self._aligned_saved = True
 
     def _nuc_MSA(self):
+        raw_threads = self.user_params.get("num_threads", 1)
+        try:
+            num_workers = int(raw_threads)
+        except (ValueError, TypeError):
+            num_workers = os.cpu_count() or 1
+        num_workers = max(1, num_workers)
+
         log.info(
-            f"conducting multiple sequence alignments based on nucleotide sequence data using "
-            f"{self.user_params.get('num_threads')} threads"
+            "conducting multiple sequence alignments based on nucleotide sequence"
+            f" data using {num_workers} threads"
+        )
+
+        if not self.plastid_data.nucleotides.items():
+            log.critical("No items in nucleotide main dictionary to process")
+            raise RuntimeError("No items in nucleotide main dictionary to process")
+
+        # Detect if the aligner implementation supports dynamic thread allocation
+        try:
+            align_params = inspect.signature(self.aligner.align).parameters
+            supports_threads = "threads" in align_params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in align_params.values()
+            )
+        except (ValueError, TypeError):
+            supports_threads = False
+
+        total_tasks = len(self.plastid_data.nucleotides)
+        budget_pool = CoreBudgetPool(
+            total_cores=num_workers,
+            total_tasks=total_tasks,
+            max_cores_per_task=None if supports_threads else 1,
         )
 
         ### Inner Function - Start ###
@@ -118,8 +147,26 @@ class AlignmentCoordination:
             fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
             os.makedirs(fasta_dir, exist_ok=True)
             out_fn_aligned_nucl = os.path.join(fasta_dir, f"nucl_{k}.aligned.fasta")
-            # Step 1. Align matrices via third-party alignment tool
-            self.aligner.align(out_fn_unalign_nucl, out_fn_aligned_nucl)
+
+            file_size = (
+                os.path.getsize(out_fn_unalign_nucl)
+                if os.path.exists(out_fn_unalign_nucl)
+                else 0
+            )
+            try:
+                with budget_pool.lease(file_size=file_size) as leased_threads:
+                    # Step 1. Align matrices via third-party alignment tool
+                    if supports_threads:
+                        self.aligner.align(
+                            out_fn_unalign_nucl,
+                            out_fn_aligned_nucl,
+                            threads=leased_threads,
+                        )
+                    else:
+                        self.aligner.align(out_fn_unalign_nucl, out_fn_aligned_nucl)
+            finally:
+                budget_pool.task_completed()
+
             # Report whether the aligner produced output
             if (
                 os.path.exists(out_fn_aligned_nucl)
@@ -134,29 +181,51 @@ class AlignmentCoordination:
         ### Inner Function - End ###
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment
-        num_workers = self.user_params.get("num_threads")
-        # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
-        if self.plastid_data.nucleotides.items():
-            max_in_flight = num_workers * 2
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                for k, future in bounded_submit_iterator(
-                    executor,
-                    single_nuc_MSA,
-                    self.plastid_data.nucleotides.keys(),
-                    max_in_flight=max_in_flight,
-                ):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        log.error(f"{k!r} generated an exception: {e}")
-        else:
+        max_in_flight = num_workers * 2
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            for k, future in bounded_submit_iterator(
+                executor,
+                single_nuc_MSA,
+                self.plastid_data.nucleotides.keys(),
+                max_in_flight=max_in_flight,
+            ):
+                try:
+                    future.result()
+                except Exception as e:
+                    log.error(f"{k!r} generated an exception: {e}")
+
+    def _prot_MSA(self):
+        raw_threads = self.user_params.get("num_threads", 1)
+        try:
+            num_workers = int(raw_threads)
+        except (ValueError, TypeError):
+            num_workers = os.cpu_count() or 1
+        num_workers = max(1, num_workers)
+
+        log.info(
+            " conducting multiple sequence alignments based on protein sequence"
+            " data, followed by back-translation to nucleotides using"
+            f" {num_workers} threads"
+        )
+
+        if not self.plastid_data.nucleotides.items():
             log.critical("No items in nucleotide main dictionary to process")
             raise RuntimeError("No items in nucleotide main dictionary to process")
 
-    def _prot_MSA(self):
-        log.info(
-            f" conducting multiple sequence alignments based on protein sequence data, "
-            f"followed by back-translation to nucleotides using {self.user_params.get('num_threads')} threads"
+        # Detect if the aligner implementation supports dynamic thread allocation
+        try:
+            align_params = inspect.signature(self.aligner.align).parameters
+            supports_threads = "threads" in align_params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in align_params.values()
+            )
+        except (ValueError, TypeError):
+            supports_threads = False
+
+        total_tasks = len(self.plastid_data.nucleotides)
+        budget_pool = CoreBudgetPool(
+            total_cores=num_workers,
+            total_tasks=total_tasks,
+            max_cores_per_task=None if supports_threads else 1,
         )
 
         ### Inner Function - Start ###
@@ -175,28 +244,52 @@ class AlignmentCoordination:
             fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
             os.makedirs(fasta_dir, exist_ok=True)
             out_fn_aligned_nucl = os.path.join(fasta_dir, f"nucl_{k}.aligned.fasta")
-            # Step 1. Align matrices based on their PROTEIN sequences via third-party alignment tool
-            self.aligner.align(out_fn_unalign_prot, out_fn_aligned_prot)
+
+            file_size = (
+                os.path.getsize(out_fn_unalign_prot)
+                if os.path.exists(out_fn_unalign_prot)
+                else 0
+            )
+            try:
+                with budget_pool.lease(file_size=file_size) as leased_threads:
+                    # Step 1. Align matrices based on their PROTEIN sequences via third-party alignment tool
+                    if supports_threads:
+                        self.aligner.align(
+                            out_fn_unalign_prot,
+                            out_fn_aligned_prot,
+                            threads=leased_threads,
+                        )
+                    else:
+                        self.aligner.align(out_fn_unalign_prot, out_fn_aligned_prot)
+            finally:
+                budget_pool.task_completed()
+
             # Report whether the protein aligner produced output
             if (
                 os.path.exists(out_fn_aligned_prot)
                 and os.path.getsize(out_fn_aligned_prot) > 0
             ):
                 log.debug(
-                    f"Protein alignment successful for `{k}` -> {out_fn_aligned_prot}"
+                    "Protein alignment successful for"
+                    f" `{k}` -> {out_fn_aligned_prot}"
                 )
             else:
                 log.warning(
-                    f"Protein alignment for `{k}` produced no output: {out_fn_aligned_prot}"
+                    f"Protein alignment for `{k}` produced no output:"
+                    f" {out_fn_aligned_prot}"
                 )
                 return
+
             # Step 2. Conduct actual back-translation from PROTEINS TO NUCLEOTIDES
             try:
                 translator = BackTranslation(
-                    k, out_fn_aligned_prot, out_fn_unalign_nucl, out_fn_aligned_nucl, 11
+                    k,
+                    out_fn_aligned_prot,
+                    out_fn_unalign_nucl,
+                    out_fn_aligned_nucl,
+                    11,
                 )
                 translator.backtranslate()
-                # Report whether back-translation produced nucleotide alignment
                 if (
                     os.path.exists(out_fn_aligned_nucl)
                     and os.path.getsize(out_fn_aligned_nucl) > 0
@@ -206,17 +299,18 @@ class AlignmentCoordination:
                     )
                 else:
                     log.warning(
-                        f"Back-translation produced no output for `{k}`: {out_fn_aligned_nucl}"
+                        f"Back-translation produced no output for `{k}`:"
+                        f" {out_fn_aligned_nucl}"
                     )
             except Exception as err:
                 log.warning(
-                    f"Unable to conduct back-translation of `{k}`. Error message: {err}."
+                    f"Unable to conduct back-translation of `{k}`. Error message:"
+                    f" {err}."
                 )
 
         ### Inner Function - End ###
 
         # Step 2. Use ThreadPoolExecutor to parallelize alignment and back-translation with bounded queue
-        num_workers = self.user_params.get("num_threads")
         max_in_flight = num_workers * 2
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for k, future in bounded_submit_iterator(

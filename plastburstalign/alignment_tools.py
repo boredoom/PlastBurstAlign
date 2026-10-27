@@ -49,18 +49,33 @@ class AlignmentTool(ABC):
         pass
 
     @abstractmethod
-    def align(self, input_file: str, output_file: str) -> bool:
-        """
-        Perform sequence alignment.
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
+        """Align sequences from input_file and write result to output_file.
 
         Args:
-            input_file: Path to input sequence file
-            output_file: Path to output alignment file
+            input_file: Path to unaligned FASTA.
+            output_file: Destination path for aligned FASTA.
+            threads: Optional dynamic thread count to override default
+              configuration.
 
         Returns:
-            True if alignment succeeded, False otherwise
+            True if alignment succeeded, False otherwise.
         """
         pass
+
+    def execute(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
+        """Alias for align() for backward compatibility."""
+        return self.align(input_file, output_file, threads=threads)
 
     def _get_tool_params(self, user_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Extract tool-specific parameters from user parameters."""
@@ -111,17 +126,13 @@ class MAFFT(AlignmentTool):
         else:
             log.info("MAFFT not found in system PATH")
 
-    def align(self, input_file: str, output_file: str) -> bool:
-        """
-        Perform alignment using MAFFT.
-
-        Args:
-            input_file: Path to input sequence file
-            output_file: Path to output alignment file
-
-        Returns:
-            True if alignment succeeded, False otherwise
-        """
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
+        """Perform alignment using MAFFT."""
         if not self._validate_input(input_file, output_file):
             return False
 
@@ -145,8 +156,10 @@ class MAFFT(AlignmentTool):
                 maxiterate_num = self.tool_params.get("maxiterate", 0)
                 cmd.extend(["--maxiterate", str(maxiterate_num)])
 
-            # Add thread option
-            mafft_threads = self.tool_params.get("threads", 1)
+            # Prioritize dynamically leased threads, falling back to tool_params
+            mafft_threads = (
+                threads if threads is not None else self.tool_params.get("threads", 1)
+            )
             cmd.extend(["--thread", str(mafft_threads)])
 
             # Add other MAFFT options
@@ -169,14 +182,15 @@ class MAFFT(AlignmentTool):
                 )
             if process.returncode == 0:
                 log.info(
-                    f"     successfully aligned {os.path.basename(input_file)} using MAFFT with {mafft_threads} threads"
+                    f"      successfully aligned {os.path.basename(input_file)} using"
+                    f" MAFFT with {mafft_threads} threads"
                 )
                 return True
             else:
-                log.error(f"  MAFFT failed with return code {process.returncode}")
+                log.error(f"   MAFFT failed with return code {process.returncode}")
                 return False
         except Exception as e:
-            log.error(f"  error during MAFFT alignment: {e}")
+            log.error(f"   error during MAFFT alignment: {e}")
             return False
 
 
@@ -191,24 +205,18 @@ class ClustalOmega(AlignmentTool):
         else:
             log.info("  Clustal Omega not found in system PATH")
 
-    def align(self, input_file: str, output_file: str) -> bool:
-        """
-        Perform alignment using Clustal Omega.
-
-        Args:
-            input_file: Path to input sequence file
-            output_file: Path to output alignment file
-
-        Returns:
-            True if alignment succeeded, False otherwise
-        """
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
+        """Perform alignment using Clustal Omega."""
         if not self._validate_input(input_file, output_file):
             return False
 
         try:
             cmd = [self.exec_path]
-
-            # Add threads
 
             # Add input/output files
             cmd.extend(["--infile", input_file])
@@ -218,7 +226,9 @@ class ClustalOmega(AlignmentTool):
             outfmt = self.tool_params.get("outfmt", "fasta")
             cmd.extend(["--outfmt", outfmt])
 
-            clustalo_threads = self.tool_params.get("threads", 1)
+            clustalo_threads = (
+                threads if threads is not None else self.tool_params.get("threads", 1)
+            )
             cmd.extend(["--thread", str(clustalo_threads)])
 
             if self.tool_params.get("dealign"):
@@ -227,7 +237,7 @@ class ClustalOmega(AlignmentTool):
             if self.tool_params.get("verbose"):
                 cmd.append("--verbose")
 
-            log.debug(f"  running Clustal Omega with command: {' '.join(cmd)}")
+            log.debug(f"   running Clustal Omega with command: {' '.join(cmd)}")
             process = subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -237,16 +247,17 @@ class ClustalOmega(AlignmentTool):
             )
             if process.returncode == 0:
                 log.info(
-                    f"     successfully aligned {os.path.basename(input_file)} using Clustal Omega with {clustalo_threads} threads"
+                    f"      successfully aligned {os.path.basename(input_file)} using"
+                    f" Clustal Omega with {clustalo_threads} threads"
                 )
                 return True
             else:
                 log.error(
-                    f"  Clustal Omega failed with return code {process.returncode}"
+                    f"   Clustal Omega failed with return code {process.returncode}"
                 )
                 return False
         except Exception as e:
-            log.error(f"  error during Clustal Omega alignment: {e}")
+            log.error(f"   error during Clustal Omega alignment: {e}")
             return False
 
 
@@ -261,17 +272,13 @@ class MUSCLE(AlignmentTool):
         else:
             log.info("  MUSCLE not found in system PATH")
 
-    def align(self, input_file: str, output_file: str) -> bool:
-        """
-        Perform alignment using MUSCLE v5.
-
-        Args:
-            input_file: Path to input sequence file
-            output_file: Path to output alignment file
-
-        Returns:
-            True if alignment succeeded, False otherwise
-        """
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
+        """Perform alignment using MUSCLE v5."""
         if not self._validate_input(input_file, output_file):
             return False
 
@@ -283,27 +290,21 @@ class MUSCLE(AlignmentTool):
             cmd.extend(["-output", output_file])
 
             # Add MUSCLE v5 options
-            # Guide tree permutation (none, abc, acb, bca)
             perm = self.tool_params.get("perm")
             if perm is not None:
                 cmd.extend(["-perm", str(perm)])
 
-            # Perturbation seed
             perturb = self.tool_params.get("perturb")
             if perturb is not None:
                 cmd.extend(["-perturb", str(perturb)])
 
-            # Maximum gap fraction (0..1)
-            # maxgapfract = self.tool_params.get("maxgapfract")
-            # if maxgapfract is not None:
-            #     cmd.extend(["-maxgapfract", str(maxgapfract)])
+            eff_threads = (
+                threads if threads is not None else self.tool_params.get("threads")
+            )
+            if eff_threads is not None and int(eff_threads) > 1:
+                cmd.extend(["-threads", str(eff_threads)])
 
-            # # Minimum column confidence (0..1)
-            # minconf = self.tool_params.get("minconf")
-            # if minconf is not None:
-            #     cmd.extend(["-minconf", str(minconf)])
-
-            log.debug(f"  running MUSCLE with command: {' '.join(cmd)}")
+            log.debug(f"   running MUSCLE with command: {' '.join(cmd)}")
             process = subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -313,14 +314,15 @@ class MUSCLE(AlignmentTool):
             )
             if process.returncode == 0:
                 log.info(
-                    f"     successfully aligned {os.path.basename(input_file)} using MUSCLE"
+                    f"      successfully aligned {os.path.basename(input_file)} using"
+                    " MUSCLE"
                 )
                 return True
             else:
-                log.error(f"  MUSCLE failed with return code {process.returncode}")
+                log.error(f"   MUSCLE failed with return code {process.returncode}")
                 return False
         except Exception as e:
-            log.error(f"  error during MUSCLE alignment: {e}")
+            log.error(f"   error during MUSCLE alignment: {e}")
             return False
 
 
@@ -368,39 +370,13 @@ class GenericAlignmentTool(AlignmentTool):
                     cmd.append(str(value))
         return cmd
 
-    def _build_command(self, input_file: str, output_file: str) -> List[str]:
+    def _build_command(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> list[str]:
         """Build the command line for a generic tool based on configuration."""
-        # cmd_template = self.tool_params.get("command_template")
-        # if cmd_template:
-        #     if isinstance(cmd_template, str):
-        #         uses_extra_placeholder = "{extra_args}" in cmd_template
-        #         formatted = cmd_template.format(
-        #             tool=self.exec_path,
-        #             input=input_file,
-        #             output=output_file,
-        #             extra_args=self._format_extra_args(),
-        #         )
-        #         cmd = shlex.split(formatted)
-        #         if not uses_extra_placeholder:
-        #             cmd = self._append_extra_args(cmd)
-        #         print(f"  generic alignment command: {' '.join(cmd)}")
-        #         return cmd
-        #     elif isinstance(cmd_template, list):
-        #         uses_extra_placeholder = any("{extra_args}" in str(item) for item in cmd_template)
-        #         cmd = [
-        #             str(item).format(
-        #                 tool=self.exec_path,
-        #                 input=input_file,
-        #                 output=output_file,
-        #                 extra_args=self._format_extra_args(),
-        #             )
-        #             for item in cmd_template
-        #         ]
-        #         if not uses_extra_placeholder:
-        #             cmd = self._append_extra_args(cmd)
-        #         print(f"  generic alignment command: {' '.join(cmd)}")
-        #         return cmd
-
         cmd = [self.exec_path]
         input_flag = self.tool_params.get("input_flag")
         output_flag = self.tool_params.get("output_flag")
@@ -413,27 +389,28 @@ class GenericAlignmentTool(AlignmentTool):
         else:
             cmd.append(output_file)
 
+        thread_flag = self.tool_params.get("thread_flag")
+        eff_threads = (
+            threads if threads is not None else self.tool_params.get("threads")
+        )
+        if thread_flag and eff_threads:
+            cmd.extend([thread_flag, str(eff_threads)])
+
         cmd = self._append_extra_args(cmd)
-        print(f"  generic alignment command: {' '.join(cmd)}")
         return cmd
 
-    def align(self, input_file: str, output_file: str) -> bool:
-        """
-        Perform alignment using a generic external aligner.
-
-        Args:
-            input_file: Path to input sequence file
-            output_file: Path to output alignment file
-
-        Returns:
-            True if alignment succeeded, False otherwise
-        """
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
         if not self._validate_input(input_file, output_file):
             return False
 
         try:
-            cmd = self._build_command(input_file, output_file)
-            log.debug(f"  running generic aligner with command: {' '.join(cmd)}")
+            cmd = self._build_command(input_file, output_file, threads=threads)
+            log.debug(f"   running generic aligner with command: {' '.join(cmd)}")
             process = subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -443,16 +420,18 @@ class GenericAlignmentTool(AlignmentTool):
             )
             if process.returncode == 0:
                 log.info(
-                    f"     successfully aligned {os.path.basename(input_file)} using {self.exec_path}"
+                    f"      successfully aligned {os.path.basename(input_file)} using"
+                    f" {self.exec_path}"
                 )
                 return True
             else:
                 log.error(
-                    f"  generic aligner failed with return code {process.returncode}"
+                    "   generic aligner failed with return code"
+                    f" {process.returncode}"
                 )
                 return False
         except Exception as e:
-            log.error(f"  error during generic alignment: {e}")
+            log.error(f"   error during generic alignment: {e}")
             return False
 
 
@@ -534,32 +513,40 @@ class CustomAligner(AlignmentTool):
             return max(1, int(configured_threads))
         return max(1, total_threads)
 
-    def _build_command_string(self, input_file: str, output_file: str) -> str:
-        threads = self._get_budgeted_threads()
+    def _build_command_string(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> str:
+        eff_threads = threads if threads is not None else self._get_budgeted_threads()
         cmd = self.command_template
         # Replace uppercase placeholders
         cmd = cmd.replace("%INPUT%", input_file)
         cmd = cmd.replace("%OUTPUT%", output_file)
-        cmd = cmd.replace("%THREADS%", str(threads))
+        cmd = cmd.replace("%THREADS%", str(eff_threads))
         # Support brace format placeholders
         cmd = cmd.replace("{input}", input_file)
         cmd = cmd.replace("{output}", output_file)
-        cmd = cmd.replace("{threads}", str(threads))
+        cmd = cmd.replace("{threads}", str(eff_threads))
         return cmd
 
-    def align(self, input_file: str, output_file: str) -> bool:
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+    ) -> bool:
         if not os.path.exists(input_file):
             log.error(f"Input file does not exist: {input_file}")
             return False
 
-        # Ensure parent output directory exists
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
 
-        cmd_str = self._build_command_string(input_file, output_file)
+        cmd_str = self._build_command_string(input_file, output_file, threads=threads)
         log.info(f"Executing custom alignment command: {cmd_str}")
 
         try:
-            # shell=True allows pipe/redirection syntax (e.g. mafft ... > output.fasta)
             process = subprocess.run(
                 cmd_str,
                 shell=True,
@@ -571,18 +558,21 @@ class CustomAligner(AlignmentTool):
 
             if process.returncode != 0:
                 log.error(
-                    f"Custom alignment failed with returncode {process.returncode}: {process.stderr.strip()}"
+                    "Custom alignment failed with returncode"
+                    f" {process.returncode}: {process.stderr.strip()}"
                 )
                 return False
 
             if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
                 log.error(
-                    f"Alignment completed but output file is missing or empty: {output_file}"
+                    "Alignment completed but output file is missing or empty:"
+                    f" {output_file}"
                 )
                 return False
 
             log.info(
-                f"Successfully aligned {os.path.basename(input_file)} -> {os.path.basename(output_file)}"
+                f"Successfully aligned {os.path.basename(input_file)} ->"
+                f" {os.path.basename(output_file)}"
             )
             return True
 

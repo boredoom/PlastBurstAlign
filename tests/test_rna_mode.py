@@ -29,8 +29,15 @@ class CopyAligner:
 
     exec_path = "test-aligner"
 
-    def align(self, input_file, output_file):
+    def align(
+        self,
+        input_file: str,
+        output_file: str,
+        threads: int | None = None,
+        **kwargs,
+    ) -> bool:
         shutil.copyfile(input_file, output_file)
+        return True
 
 
 class RNAModeTests(unittest.TestCase):
