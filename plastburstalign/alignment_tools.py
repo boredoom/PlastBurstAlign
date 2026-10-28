@@ -134,16 +134,43 @@ class MAFFT(AlignmentTool):
             log.info("MAFFT not found in system PATH")
 
     @staticmethod
-    def _count_sequences_fast(input_file: str) -> int:
-        """Fast binary scan to count records in an unaligned FASTA file without parsing objects."""
+    def _scan_fasta_meta(input_file: str) -> tuple[int, int]:
+        """Fast binary scan to count records and find minimum effective sequence length
+        without parsing BioPython objects. Excludes stop asterisks (*), gaps (-, .),
+        and whitespace. Returns (record_count, min_seq_length)."""
         count = 0
+        min_len = float("inf")
+        curr_len = 0
+        in_seq = False
+        non_residues = bytes([42, 32, 9, 13, 10, 45, 46])  # ASCII for * space \t \r \n - .
         try:
             with open(input_file, "rb") as f:
                 for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
                     if line.startswith(b">"):
                         count += 1
+                        if in_seq:
+                            if curr_len < min_len:
+                                min_len = curr_len
+                            curr_len = 0
+                        in_seq = True
+                    else:
+                        cleaned = line.translate(None, non_residues)
+                        curr_len += len(cleaned)
+                if in_seq and curr_len < min_len:
+                    min_len = curr_len
         except OSError:
             pass
+        if min_len == float("inf"):
+            min_len = 0
+        return count, int(min_len)
+
+    @staticmethod
+    def _count_sequences_fast(input_file: str) -> int:
+        """Backward-compatible helper returning sequence count."""
+        count, _ = MAFFT._scan_fasta_meta(input_file)
         return count
 
     def _build_command(
@@ -185,21 +212,30 @@ class MAFFT(AlignmentTool):
                 cmd.extend(["--maxiterate", str(maxiterate_num)])
         else:
             # Adaptive PartTree heuristics for massive datasets
-            n_seq = (
-                sequence_count
+            n_seq, min_len = (
+                (sequence_count, 6)
                 if sequence_count is not None
-                else self._count_sequences_fast(input_file)
+                else self._scan_fasta_meta(input_file)
             )
 
+            # PartTree requires 6-mer indexing; any sequence < 6 chars aborts MAFFT
             if adaptive_enabled and n_seq >= parttree_threshold:
-                cmd.append("--parttree")
-                if n_seq >= retree1_threshold:
+                if min_len < 6:
+                    log.warning(
+                        f"      adaptive heuristic: dataset N={n_seq} qualifies for PartTree, but "
+                        f"contains short sequence(s) (min length={min_len} < 6 residues). "
+                        f"Bypassing PartTree to prevent aligner abort; falling back to --auto."
+                    )
+                    cmd.append("--auto")
+                elif n_seq >= retree1_threshold:
+                    cmd.append("--parttree")
                     cmd.extend(["--retree", "1"])
                     log.info(
                         f"      adaptive heuristic (N={n_seq} >= {retree1_threshold}):"
                         " applied MAFFT NW-NS-PartTree1 (--parttree --retree 1)"
                     )
                 else:
+                    cmd.append("--parttree")
                     cmd.extend(["--retree", "2"])
                     log.info(
                         f"      adaptive heuristic (N={n_seq} >= {parttree_threshold}):"

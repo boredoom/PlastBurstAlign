@@ -77,5 +77,18 @@ class TestAdaptiveHeuristics(unittest.TestCase):
         self.assertEqual(cmd[retree_idx + 1], "1")
 
 
+    def test_parttree_bypassed_when_sequence_under_6_characters(self):
+        # Even with N >= 5000, if any sequence < 6 chars (excluding stop *), bypass --parttree
+        with open(self.in_file, "w") as f:
+            for i in range(5000):
+                f.write(f">seq_{i}\nMKWVTFISLLLLFSSAYSRGVFRRDTHKSEIAHRFKDLGEEHFKGLVLIAFSQYLQQCPFDEH\n")
+            # Append one short 5-residue sequence ending with a stop *
+            f.write(">short_seq\nMVLSS*\n")
+
+        mafft = MAFFT()
+        cmd = mafft._build_command(self.in_file)
+        self.assertNotIn("--parttree", cmd)
+        self.assertIn("--auto", cmd)
+
 if __name__ == "__main__":
     unittest.main()
