@@ -5,10 +5,10 @@ from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
 from typing import Any, NamedTuple
 
-from Bio import SeqIO
 from Bio.SeqFeature import CompoundLocation, FeatureLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
 
+from .genbank_scanner import fast_read_genbank
 from .helpers import bounded_submit_iterator, split_list
 from .logging_ops import Logger
 from .logging_ops import logger as log
@@ -179,7 +179,7 @@ class ExtractAndCollect:
         def extract_rec(file: str, n_dict: PlastidDict, p_dict: PlastidDict | None):
             try:
                 log.info(f" parsing {os.path.basename(file)}")
-                record = SeqIO.read(file, "genbank")
+                record = fast_read_genbank(file)
 
                 extractor = ExtractAndCollect.__new__(ExtractAndCollect)
                 extractor.plastid_data = MockData()
