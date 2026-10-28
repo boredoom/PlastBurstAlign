@@ -21,6 +21,7 @@ class IncrementalNexusAccumulator:
 
     def __init__(self) -> None:
         self.combined: NexusAlignment | None = None
+        self.chunk_buffer: dict[str, list[str]] = {}
 
     def add(self, name: str, m: NexusAlignment) -> None:
         if self.combined is None:
@@ -40,6 +41,10 @@ class IncrementalNexusAccumulator:
             self.combined.charpartitions = {
                 "combined": {name: list(range(self.combined.nchar))}
             }
+            # Initialize O(1) append buffer with string representations
+            self.chunk_buffer = {
+                t: [str(seq)] for t, seq in self.combined.matrix.items()
+            }
             return
 
         comb = self.combined
@@ -52,29 +57,41 @@ class IncrementalNexusAccumulator:
         comb_taxlabels: list[str] = comb.taxlabels
         m_taxlabels: list[str] = m.taxlabels
 
-        both = [t for t in comb_taxlabels if t in m_taxlabels]
-        combined_only = [t for t in comb_taxlabels if t not in both]
-        m_only = [t for t in m_taxlabels if t not in both]
+        # O(1) set membership replaces O(N^2) list scans
+        comb_tax_set = set(comb_taxlabels)
+        m_tax_set = set(m_taxlabels)
+
+        both = [t for t in comb_taxlabels if t in m_tax_set]
+        combined_only = [t for t in comb_taxlabels if t not in m_tax_set]
+        m_only = [t for t in m_taxlabels if t not in comb_tax_set]
 
         assert isinstance(comb.matrix, dict)
         assert isinstance(m.matrix, dict)
-        comb_matrix = comb.matrix
         m_matrix = m.matrix
 
+        m_gap = m.gap
+        comb_gap = comb.gap
+        m_missing = m.missing
+        comb_missing = comb.missing
+        needs_replace = (m_gap != comb_gap) or (m_missing != comb_missing)
+
+        def clean_m_seq(raw_seq) -> str:
+            s = str(raw_seq)
+            if needs_replace:
+                s = s.replace(m_gap, comb_gap).replace(m_missing, comb_missing)
+            return s
+
+        # Precompute padding strings once per locus instead of per-taxon
+        missing_padding = comb_missing * m.nchar
+        comb_missing_padding = comb_missing * comb.nchar
+
+        # O(1) list appends avoid quadratic string copying
         for t in both:
-            comb_matrix[t] += Seq(
-                str(m_matrix[t])
-                .replace(m.gap, comb.gap)
-                .replace(m.missing, comb.missing)
-            )
+            self.chunk_buffer[t].append(clean_m_seq(m_matrix[t]))
         for t in combined_only:
-            comb_matrix[t] += Seq(comb.missing * m.nchar)
+            self.chunk_buffer[t].append(missing_padding)
         for t in m_only:
-            comb_matrix[t] = Seq(comb.missing * comb.nchar) + Seq(
-                str(m_matrix[t])
-                .replace(m.gap, comb.gap)
-                .replace(m.missing, comb.missing)
-            )
+            self.chunk_buffer[t] = [comb_missing_padding, clean_m_seq(m_matrix[t])]
 
         comb_taxlabels.extend(m_only)
         for cn, cs in m.charsets.items():
@@ -99,6 +116,13 @@ class IncrementalNexusAccumulator:
     def finalize(self) -> NexusAlignment | None:
         if self.combined is None:
             return None
+
+        # Assemble final matrix in a single pass per taxon
+        self.combined.matrix = {
+            t: Seq("".join(chunks)) for t, chunks in self.chunk_buffer.items()
+        }
+        self.chunk_buffer.clear()
+
         charpartitions: dict[str, dict[str, list[int]]] = self.combined.charpartitions
         charsets: dict[str, list[int]] = self.combined.charsets
         for c, partition in charpartitions.get("combined", {}).items():

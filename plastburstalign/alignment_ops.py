@@ -471,14 +471,26 @@ class AlignmentCoordination:
                 ) from e
 
         def _load_nexus_alignment(msa_name: str, nexus_path: str) -> NexusAlignment:
-            alignm_nexus = AlignIO.read(nexus_path, "nexus")
-            hndl = StringIO()
-            AlignIO.write(alignm_nexus, hndl, "nexus")
-            nexus_string = hndl.getvalue()
+            # Parse nexus directly from disk without StringIO round-trips
+            alignm_nexus = NexusAlignment(nexus_path)
+            prefix = f"{msa_name}_"
+            r_prefix = f"_R_{msa_name}_"
 
-            gene_name_pattern = rf"\n(_R_)?{msa_name}_"
-            nexus_string = re.sub(gene_name_pattern, "\nconcat_", nexus_string)
-            return NexusAlignment(nexus_string)
+            new_matrix = {}
+            new_taxlabels = []
+            for t in alignm_nexus.taxlabels:
+                if t.startswith(r_prefix):
+                    clean_t = "concat_" + t[len(r_prefix):]
+                elif t.startswith(prefix):
+                    clean_t = "concat_" + t[len(prefix):]
+                else:
+                    clean_t = t
+                new_matrix[clean_t] = alignm_nexus.matrix[t]
+                new_taxlabels.append(clean_t)
+
+            alignm_nexus.matrix = new_matrix
+            alignm_nexus.taxlabels = new_taxlabels
+            return alignm_nexus
 
         log.info(
             f"concatenating all successful alignments in `{self.plastid_data.order}` order"
