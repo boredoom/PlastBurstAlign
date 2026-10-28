@@ -49,6 +49,15 @@ class UserParameters(Dict[str, Any]):
         include_trna: bool = True,
         include_rrna: bool = True,
         adaptive_heuristics: bool = True,
+        export_slurm: bool = False,
+        slurm_partitions: int = 10,
+        slurm_cpus: int = 8,
+        slurm_mem: str = "16G",
+        slurm_time: str = "04:00:00",
+        slurm_partition: Optional[str] = None,
+        align_partition: Optional[int] = None,
+        finalize_slurm: bool = False,
+        manifest_path: Optional[str] = None,
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -96,6 +105,17 @@ class UserParameters(Dict[str, Any]):
         self._set_alignment_command(alignment_command)
         self._set_config_file(config_file)
         self._set_adaptive_heuristics(adaptive_heuristics)
+        self["export_slurm"] = bool(export_slurm)
+        self["slurm_partitions"] = int(slurm_partitions)
+        self["slurm_cpus"] = int(slurm_cpus)
+        self["slurm_mem"] = str(slurm_mem)
+        self["slurm_time"] = str(slurm_time)
+        self["slurm_partition"] = slurm_partition
+        self["align_partition"] = (
+            int(align_partition) if align_partition is not None else None
+        )
+        self["finalize_slurm"] = bool(finalize_slurm)
+        self["manifest_path"] = manifest_path
 
     def _set_select_mode(self, select_mode: str):
         try:
@@ -104,8 +124,16 @@ class UserParameters(Dict[str, Any]):
             log.critical(f"Invalid selection mode provided: `{select_mode}`")
             raise ValueError
 
-    def _set_in_dir(self, in_dir: str):
-        if not os.path.exists(in_dir) or not isinstance(in_dir, str):
+    def _set_in_dir(self, in_dir: Optional[str]):
+        is_cluster_worker_or_final = (
+            self.get("align_partition") is not None
+            or self.get("finalize_slurm") is True
+        )
+        if is_cluster_worker_or_final and (in_dir is None or in_dir == "./input"):
+            self["in_dir"] = in_dir or "./input"
+            return
+
+        if in_dir is None or not os.path.exists(in_dir) or not isinstance(in_dir, str):
             log.critical(f"Input directory `{in_dir}` does not exist.")
             raise FileNotFoundError
         self["in_dir"] = in_dir
@@ -279,6 +307,24 @@ class UserParametersScript(UserParameters):
         "config": "config_file",
         "adaptive_heuristics": "adaptive_heuristics",
         "adaptiveheuristics": "adaptive_heuristics",
+        "export_slurm": "export_slurm",
+        "exportslurm": "export_slurm",
+        "slurm_partitions": "slurm_partitions",
+        "slurmpartitions": "slurm_partitions",
+        "slurm_cpus": "slurm_cpus",
+        "slurmcpus": "slurm_cpus",
+        "slurm_mem": "slurm_mem",
+        "slurmmem": "slurm_mem",
+        "slurm_time": "slurm_time",
+        "slurmtime": "slurm_time",
+        "slurm_partition": "slurm_partition",
+        "slurmpartition": "slurm_partition",
+        "align_partition": "align_partition",
+        "alignpartition": "align_partition",
+        "finalize_slurm": "finalize_slurm",
+        "finalizeslurm": "finalize_slurm",
+        "manifest": "manifest_path",
+        "manifest_path": "manifest_path",
     }
 
     def __init__(self):
@@ -486,6 +532,69 @@ class UserParametersScript(UserParameters):
                 "Enable adaptive PartTree heuristics for massive datasets (>1,000"
                 " sequences) (default: enabled)"
             ),
+        )
+        parser.add_argument(
+            "--export-slurm",
+            dest="export_slurm",
+            action="store_true",
+            default=False,
+            help="Generate Slurm array job scripts and task manifest instead of local alignment",
+        )
+        parser.add_argument(
+            "--slurm-partitions",
+            dest="slurm_partitions",
+            type=int,
+            default=10,
+            help="Number of partitions to divide alignment tasks across (default: 10)",
+        )
+        parser.add_argument(
+            "--slurm-cpus",
+            dest="slurm_cpus",
+            type=int,
+            default=8,
+            help="CPUs per Slurm worker task (default: 8)",
+        )
+        parser.add_argument(
+            "--slurm-mem",
+            dest="slurm_mem",
+            type=str,
+            default="16G",
+            help="Memory allocated per Slurm worker task (default: 16G)",
+        )
+        parser.add_argument(
+            "--slurm-time",
+            dest="slurm_time",
+            type=str,
+            default="04:00:00",
+            help="Time limit for Slurm worker tasks (default: 04:00:00)",
+        )
+        parser.add_argument(
+            "--slurm-partition",
+            dest="slurm_partition",
+            type=str,
+            default=None,
+            help="Target Slurm queue/partition name",
+        )
+        parser.add_argument(
+            "--align-partition",
+            dest="align_partition",
+            type=int,
+            default=None,
+            help="Worker task: run alignment strictly for the assigned partition ID",
+        )
+        parser.add_argument(
+            "--finalize-slurm",
+            dest="finalize_slurm",
+            action="store_true",
+            default=False,
+            help="Finalizer task: verify all partition outputs and concatenate supermatrices",
+        )
+        parser.add_argument(
+            "--manifest",
+            dest="manifest_path",
+            type=str,
+            default=None,
+            help="Path to slurm_manifest.json (used by --align-partition and --finalize-slurm)",
         )
         return parser
 
