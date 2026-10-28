@@ -498,8 +498,7 @@ class GenericAlignmentTool(AlignmentTool):
                 return True
             else:
                 log.error(
-                    "   generic aligner failed with return code"
-                    f" {process.returncode}"
+                    f"   generic aligner failed with return code {process.returncode}"
                 )
                 return False
         except Exception as e:
