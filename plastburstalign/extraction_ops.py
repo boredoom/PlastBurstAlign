@@ -222,20 +222,24 @@ class ExtractAndCollect:
             if self._is_region_excluded(feat_name):
                 continue
 
-            # Step 1. Extract nucleotide sequence of each gene and add to dictionary
+            # Step 1. Extract nucleotide sequence of each gene
             gene = GeneFeature(rec, feature)
-            if gene.seq_obj is None:
-                nuc_dict.add_feature(gene)
-                continue
-            if len(gene.seq_obj) < self.min_seq_length or self._is_region_excluded(gene.feat_name):
+            if gene.seq_obj is None or len(gene.seq_obj) < self.min_seq_length or self._is_region_excluded(gene.feat_name):
                 continue
 
-            nuc_dict.add_feature(gene)
-
-            # Step 2. Translate nucleotide sequence to protein and add to dictionary
+            # Step 2. Translate nucleotide sequence to protein when in CDS mode
             if protein_dict is not None:
                 protein = ProteinFeature(gene=gene)
+                if protein.seq_obj is None:
+                    continue
+                clean_aa = str(protein.seq_obj).rstrip("*")
+                # Ensure the sequence contains valid residues for alignment (cannot be empty)
+                min_aa = max(1, self.min_seq_length // 3)
+                if len(clean_aa) < min_aa:
+                    continue
                 protein_dict.add_feature(protein)
+
+            nuc_dict.add_feature(gene)
 
     def _extract_rna(self, rec: SeqRecord, nuc_dict: PlastidDict):
         """
