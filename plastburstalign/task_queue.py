@@ -74,21 +74,14 @@ class CoreBudgetPool:
             self._cond.notify_all()
 
     def lease_cores(self, file_size: int = 0) -> int:
-        """Block until at least 1 core is available, then allocate an optimal core lease
+        preferred = self.estimate_preferred_cores(file_size)
+        min_acceptable = min(preferred, max(1, self.total_cores // 2)) if preferred >= 4 else 1
 
-        based on remaining tasks and input file weight.
-        """
         with self._cond:
-            while self._available_cores <= 0:
+            while self._available_cores < min_acceptable:
                 self._cond.wait()
 
-            remaining = max(1, self._remaining_tasks)
-
-            # In deep queues, fair share is 1. When remaining < total_cores, fair share expands.
-            fair_share = max(1, self.total_cores // remaining)
-
-            # Heuristic boost for massive unaligned files (>25MB -> 8, >10MB -> 4, >2MB -> 2)
-            preferred = self.estimate_preferred_cores(file_size)
+            fair_share = max(1, self.total_cores // max(1, self._remaining_tasks))
             target = max(fair_share, preferred)
 
             allocated = min(self._available_cores, target, self.max_cores_per_task)

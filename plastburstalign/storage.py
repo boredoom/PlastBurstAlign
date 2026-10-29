@@ -176,6 +176,72 @@ class DiskBackedFeatureStore:
             self._conn.commit()
         return inserted
 
+    def add_pdict(
+        self,
+        pdict: Any,
+        seq_type: str,
+        inv_map: dict[str, str] | None = None,
+    ) -> None:
+        """Batch-insert sequence records from an extracted dictionary into SQLite.
+
+        Registers all regions upfront and bulk-inserts rows via executemany
+        to eliminate per-record SQL compile and Python method overhead.
+        """
+        if not pdict:
+            return
+
+        inv_map = inv_map or {}
+
+        # 1. Register all unique regions upfront (O(num_regions) instead of O(num_records))
+        for feat_name in pdict.keys():
+            self.register_region(feat_name, inv_name=inv_map.get(feat_name))
+
+        # 2. Vectorize rows into flat tuples
+        rows: list[tuple[str, str, str, str, str, str, int]] = []
+        cursor = self._conn.cursor()
+
+        for feat_name, records in pdict.items():
+            inv_name = inv_map.get(feat_name)
+            for rec in records:
+                taxon_name = str(rec.id)
+                if inv_name:
+                    cursor.execute(
+                        """
+                        SELECT 1 FROM sequence_records
+                        WHERE region_name = ? AND taxon_name = ? AND seq_type = ?
+                        LIMIT 1;
+                        """,
+                        (inv_name, taxon_name, seq_type),
+                    )
+                    if cursor.fetchone() is not None:
+                        continue
+
+                seq_str = str(rec.seq)
+                rows.append(
+                    (
+                        feat_name,
+                        taxon_name,
+                        seq_type,
+                        str(rec.id) if rec.id is not None else "",
+                        rec.description or "",
+                        seq_str,
+                        len(seq_str),
+                    )
+                )
+
+        # 3. High-throughput bulk insert
+        if rows:
+            cursor.executemany(
+                """
+                INSERT OR IGNORE INTO sequence_records (
+                    region_name, taxon_name, seq_type, seq_id, description, sequence, seq_len
+                ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                rows,
+            )
+            if not self._in_transaction:
+                self._conn.commit()
+
     def add_seqrecord(
         self,
         region_name: str,
