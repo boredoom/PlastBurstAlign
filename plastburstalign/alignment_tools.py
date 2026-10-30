@@ -9,6 +9,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from .ephemeral_engine import EphemeralScratchManager
 from .logging_ops import logger as log
 
 
@@ -35,6 +36,8 @@ class AlignmentTool(ABC):
         # self.num_threads = self._set_num_threads(user_params)
         # self.num_threads = "1"  # For debugging, set to 1 to avoid multiprocessing issues"
         self.tool_params = self._get_tool_params(user_params)
+        custom_scratch = self.tool_params.get("scratch_dir", self.user_params.get("scratch_dir"))
+        self.scratch_mgr = EphemeralScratchManager(custom_scratch_dir=custom_scratch)
 
         if tool_path:
             self._validate_tool_path(tool_path)
@@ -96,6 +99,10 @@ class AlignmentTool(ABC):
         else:
             log.error(f"  specified tool path is not executable: {tool_path}")
             self.exec_path = None
+
+    def _get_subprocess_env(self) -> dict[str, str]:
+        """Provides subprocess environment with TMPDIR mapped to ephemeral RAM-disk."""
+        return self.scratch_mgr.get_subprocess_env()
 
     def _log_configuration(self):
         """Log the tool configuration."""
@@ -318,6 +325,7 @@ class MAFFT(AlignmentTool):
                     stderr=subprocess.DEVNULL,
                     text=True,
                     check=False,
+                    env=self._get_subprocess_env(),
                 )
             if process.returncode == 0:
                 log.info(
@@ -384,6 +392,7 @@ class ClustalOmega(AlignmentTool):
                 stderr=subprocess.DEVNULL,
                 text=True,
                 check=False,
+                env=self._get_subprocess_env(),
             )
             if process.returncode == 0:
                 log.info(
@@ -452,6 +461,7 @@ class MUSCLE(AlignmentTool):
                 stderr=subprocess.DEVNULL,
                 text=True,
                 check=False,
+                env=self._get_subprocess_env(),
             )
             if process.returncode == 0:
                 log.info(
@@ -559,6 +569,7 @@ class GenericAlignmentTool(AlignmentTool):
                 stderr=subprocess.DEVNULL,
                 text=True,
                 check=False,
+                env=self._get_subprocess_env(),
             )
             if process.returncode == 0:
                 log.info(
@@ -696,6 +707,7 @@ class CustomAligner(AlignmentTool):
                 stderr=subprocess.PIPE,
                 text=True,
                 check=False,
+                env=self._get_subprocess_env(),
             )
 
             if process.returncode != 0:
