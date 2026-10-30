@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import os
 import re
+import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
@@ -18,7 +19,7 @@ from Bio.SeqRecord import SeqRecord
 from .alignment_tools import get_alignment_tool
 from .helpers import bounded_submit_iterator, split_list
 from .logging_ops import logger as log
-from .nexus_ops import ConcatenationError, IncrementalNexusAccumulator
+from .nexus_ops import ConcatenationError, IncrementalNexusAccumulator, fast_write_nexus, fast_write_fasta
 from .seqfeature_ops import PlastidData
 from .task_queue import CoreBudgetPool
 
@@ -26,6 +27,79 @@ from .task_queue import CoreBudgetPool
 # Module-level helper functions for multiprocessing
 # ===================================================================
 
+def fast_fasta_to_nexus(fasta_path: str, nexus_path: str) -> bool:
+    """High-throughput FASTA-to-NEXUS converter bypassing SeqRecord object overhead."""
+    taxa: list[tuple[str, str]] = []
+    try:
+        if not os.path.exists(fasta_path) or os.path.getsize(fasta_path) == 0:
+            return False
+
+        with open(fasta_path, "r", buffering=1024 * 1024) as f:
+            curr_id = None
+            chunks: list[str] = []
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith(">"):
+                    if curr_id:
+                        taxa.append((curr_id, "".join(chunks)))
+                        chunks.clear()
+                    curr_id = line[1:].split()[0]
+                else:
+                    chunks.append(line)
+            if curr_id:
+                taxa.append((curr_id, "".join(chunks)))
+
+        if not taxa:
+            return False
+
+        ntax = len(taxa)
+        nchar = len(taxa[0][1])
+
+        os.makedirs(os.path.dirname(os.path.abspath(nexus_path)), exist_ok=True)
+        with open(nexus_path, "w", buffering=1024 * 1024) as f:
+            f.write("#NEXUS\nbegin data;\n")
+            f.write(f"\tdimensions ntax={ntax} nchar={nchar};\n")
+            f.write("\tformat datatype=dna missing=? gap=-;\nmatrix\n")
+            max_id_len = max(len(t[0]) for t in taxa) + 4
+            for taxon_id, seq in taxa:
+                f.write(f"{taxon_id.ljust(max_id_len)}{seq}\n")
+            f.write(";\nend;\n")
+        return True
+    except Exception as e:
+        log.warning(f"Failed to convert {fasta_path} to NEXUS: {e}")
+        return False
+
+class FastNexusMatrix:
+    """Lightweight duck-typed container matching NexusAlignment interface for concatenation."""
+
+    __slots__ = (
+        "matrix",
+        "taxlabels",
+        "nchar",
+        "datatype",
+        "gap",
+        "missing",
+        "charsets",
+        "taxsets",
+        "charlabels",
+        "statelabels",
+        "charpartitions",
+    )
+
+    def __init__(self, matrix: dict[str, str], taxlabels: list[str], nchar: int):
+        self.matrix = matrix
+        self.taxlabels = taxlabels
+        self.nchar = nchar
+        self.datatype = "dna"
+        self.gap = "-"
+        self.missing = "?"
+        self.charsets: dict[str, Any] = {}
+        self.taxsets: dict[str, Any] = {}
+        self.charlabels: list[str] | None = None
+        self.statelabels: list[str] | None = None
+        self.charpartitions: dict[str, Any] = {}
 
 class AlignmentCoordination:
     def __init__(self, plastid_data: PlastidData, user_params: dict[str, Any]):
@@ -42,6 +116,7 @@ class AlignmentCoordination:
         self.success_list = []
         self._unaligned_saved = False
         self._aligned_saved = False
+        self._success_lock = threading.Lock()
 
         # Create the appropriate alignment tool
         tool_name = (user_params or {}).get("alignment_tool", "mafft") or "mafft"
@@ -76,30 +151,28 @@ class AlignmentCoordination:
             return False
 
     def save_unaligned(self):
-        """
-        For each region in the plastid data, an unaligned nucleotide matrix of sequences is saved to file.
-        These are saved in FASTA format, located in the path specified by `user_params.out_dir`.
-        If the plastid data contains protein sequences, those are saved as unaligned protein matrices.
-        """
-        log.info("saving individual regions as unaligned nucleotide matrices")
+        """Saves unaligned nucleotide and protein matrices in parallel."""
+        log.info("saving individual regions as unaligned matrices in parallel")
         collect_proteins = self.plastid_data.mode.collects_proteins()
         out_dir = self.user_params.get("out_dir")
         store = self.plastid_data.store
 
-        for feat_name in self.plastid_data.nucleotides.keys():
+        def _export_single(feat_name: str) -> None:
             try:
-                out_fn_unalign_nucl = os.path.join(
-                    out_dir, f"nucl_{feat_name}.unalign.fasta"
-                )
-                store.export_fasta(feat_name, "nucl", out_fn_unalign_nucl)
+                out_fn_nucl = os.path.join(out_dir, f"nucl_{feat_name}.unalign.fasta")
+                store.export_fasta(feat_name, "nucl", out_fn_nucl)
 
                 if collect_proteins:
-                    out_fn_unalign_prot = os.path.join(
-                        out_dir, f"prot_{feat_name}.unalign.fasta"
-                    )
-                    store.export_fasta(feat_name, "prot", out_fn_unalign_prot)
+                    out_fn_prot = os.path.join(out_dir, f"prot_{feat_name}.unalign.fasta")
+                    store.export_fasta(feat_name, "prot", out_fn_prot)
             except Exception as e:
                 log.error(f"Error saving {feat_name}: {e}")
+
+        regions = list(self.plastid_data.nucleotides.keys())
+        raw_threads = self.user_params.get("num_threads", 4) or 4
+        max_workers = min(int(raw_threads), 8)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            list(pool.map(_export_single, regions))
 
         self._unaligned_saved = True
 
@@ -158,15 +231,26 @@ class AlignmentCoordination:
             )
             supports_threads = "threads" in align_params or has_var_keyword
             supports_seq_count = "sequence_count" in align_params or has_var_keyword
+            supports_max_len = "max_len" in align_params or has_var_keyword
         except (ValueError, TypeError):
             supports_threads = False
             supports_seq_count = False
+            supports_max_len = False
 
         total_tasks = len(self.plastid_data.nucleotides)
+
+        # Calculate water-filling schedule from region summary
+        tasks_meta = {
+            k: (region_summary.get(k, {}).get("count", 1), region_summary.get(k, {}).get("max_len", 1))
+            for k in self.plastid_data.nucleotides.keys()
+        }
+        schedule = CoreBudgetPool.solve_water_filling_schedule(tasks_meta, total_cores=num_workers)
+
         budget_pool = CoreBudgetPool(
             total_cores=num_workers,
             total_tasks=total_tasks,
             max_cores_per_task=None if supports_threads else 1,
+            schedule=schedule if supports_threads else None,
         )
 
         ### Inner Function - Start ###
@@ -188,13 +272,16 @@ class AlignmentCoordination:
             seq_count = region_summary.get(k, {}).get("count")
 
             try:
-                with budget_pool.lease(file_size=file_size) as leased_threads:
+                with budget_pool.lease(file_size=file_size, task_id=k) as leased_threads:
                     # Dynamically pass supported arguments
                     align_kwargs: dict[str, Any] = {}
                     if supports_threads:
                         align_kwargs["threads"] = leased_threads
                     if supports_seq_count and seq_count is not None:
                         align_kwargs["sequence_count"] = seq_count
+                        max_len = region_summary.get(k, {}).get("max_len")
+                        if supports_max_len and max_len is not None:
+                            align_kwargs["max_len"] = max_len
 
                     # Step 1. Align matrices via third-party alignment tool
                     self.aligner.align(
@@ -213,6 +300,18 @@ class AlignmentCoordination:
                 log.warning(
                     f"Alignment for `{k}` produced no output: {out_fn_aligned_nucl}"
                 )
+
+            # Convert aligned nucleotide FASTA to NEXUS in-situ if enabled
+            individual_nexus = self.user_params.get("individual_nexus", True)
+            if individual_nexus:
+                nexus_dir = os.path.join(self.user_params.get("out_dir"), "nexus")
+                out_fn_aligned_nexus = os.path.join(nexus_dir, f"nucl_{k}.aligned.nexus")
+                if fast_fasta_to_nexus(out_fn_aligned_nucl, out_fn_aligned_nexus):
+                    with self._success_lock:
+                        self.success_list.append((k, out_fn_aligned_nexus))
+            else:
+                with self._success_lock:
+                    self.success_list.append((k, out_fn_aligned_nucl))
 
         ### Inner Function - End ###
 
@@ -263,15 +362,26 @@ class AlignmentCoordination:
             )
             supports_threads = "threads" in align_params or has_var_keyword
             supports_seq_count = "sequence_count" in align_params or has_var_keyword
+            supports_max_len = "max_len" in align_params or has_var_keyword
         except (ValueError, TypeError):
             supports_threads = False
             supports_seq_count = False
+            supports_max_len = False
 
         total_tasks = len(self.plastid_data.nucleotides)
+
+        # Calculate water-filling schedule from protein region summary
+        tasks_meta = {
+            k: (region_summary.get(k, {}).get("count", 1), region_summary.get(k, {}).get("max_len", 1))
+            for k in self.plastid_data.nucleotides.keys()
+        }
+        schedule = CoreBudgetPool.solve_water_filling_schedule(tasks_meta, total_cores=num_workers)
+
         budget_pool = CoreBudgetPool(
             total_cores=num_workers,
             total_tasks=total_tasks,
             max_cores_per_task=None if supports_threads else 1,
+            schedule=schedule if supports_threads else None,
         )
 
         ### Inner Function - Start ###
@@ -299,13 +409,16 @@ class AlignmentCoordination:
             seq_count = region_summary.get(k, {}).get("count")
 
             try:
-                with budget_pool.lease(file_size=file_size) as leased_threads:
+                with budget_pool.lease(file_size=file_size, task_id=k) as leased_threads:
                     # Dynamically pass supported arguments
                     align_kwargs: dict[str, Any] = {}
                     if supports_threads:
                         align_kwargs["threads"] = leased_threads
                     if supports_seq_count and seq_count is not None:
                         align_kwargs["sequence_count"] = seq_count
+                        max_len = region_summary.get(k, {}).get("max_len")
+                        if supports_max_len and max_len is not None:
+                            align_kwargs["max_len"] = max_len
 
                     # Step 1. Align matrices based on their PROTEIN sequences via third-party alignment tool
                     self.aligner.align(
@@ -339,23 +452,30 @@ class AlignmentCoordination:
                     11,
                 )
                 translator.backtranslate()
-                if (
+                if not (
                     os.path.exists(out_fn_aligned_nucl)
                     and os.path.getsize(out_fn_aligned_nucl) > 0
                 ):
-                    log.debug(
-                        f"Back-translation successful for `{k}` -> {out_fn_aligned_nucl}"
-                    )
-                else:
                     log.warning(
-                        f"Back-translation produced no output for `{k}`:"
-                        f" {out_fn_aligned_nucl}"
+                        f"Back-translation produced no output for `{k}`: {out_fn_aligned_nucl}"
                     )
+                    return
+                log.debug(f"Back-translation successful for `{k}` -> {out_fn_aligned_nucl}")
             except Exception as err:
-                log.warning(
-                    f"Unable to conduct back-translation of `{k}`. Error message:"
-                    f" {err}."
-                )
+                log.warning(f"Unable to conduct back-translation of `{k}`: {err}")
+                return
+
+            # Step 3. Convert aligned nucleotide FASTA to NEXUS in-situ if enabled
+            individual_nexus = self.user_params.get("individual_nexus", True)
+            if individual_nexus:
+                nexus_dir = os.path.join(self.user_params.get("out_dir"), "nexus")
+                out_fn_aligned_nexus = os.path.join(nexus_dir, f"nucl_{k}.aligned.nexus")
+                if fast_fasta_to_nexus(out_fn_aligned_nucl, out_fn_aligned_nexus):
+                    with self._success_lock:
+                        self.success_list.append((k, out_fn_aligned_nexus))
+            else:
+                with self._success_lock:
+                    self.success_list.append((k, out_fn_aligned_nucl))
 
         ### Inner Function - End ###
 
@@ -375,36 +495,30 @@ class AlignmentCoordination:
                     log.error(f"{k} generated an exception: {e}")
 
     def perform_MSAs(self):
-        """
-        For each region in the plastid data, the sequences are aligned and saved to file in FASTA and NEXUS format
-        in the path specified by `user_params.out_dir`.
-        """
-
+        """Perform multiple sequence alignments and ensure all loci convert to NEXUS."""
         if not self._aligned_saved:
             self.perform_MSA()
 
-        # log.info(
-        #     f"collecting all successful alignments using {self.user_params.get('num_threads')} processes"
-        # )
-        log.info(
-            f"converting all successful alignments to NEXUS format using {self.user_params.get('num_threads')} threads"
-        )
-        msa_lists = split_list(
-            list(self.plastid_data.nucleotides.keys()),
-            self.user_params.get("num_threads") * 2,
-        )
-        # Use ThreadPoolExecutor for I/O-bound file conversions
-        num_workers = self.user_params.get("num_threads")
-        # num_workers = 1  # multiprocessing can cause issues on some platforms, so default to single-threaded for now
-
-        max_in_flight = num_workers * 2
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            for _, future in bounded_submit_iterator(
-                executor, self.convert_MSAs, msa_lists, max_in_flight=max_in_flight
-            ):
-                success_list = future.result()
-                if len(success_list) > 0:
-                    self.success_list.extend(success_list)
+        completed_keys = {name for name, _ in self.success_list}
+        missing_loci = [
+            k for k in self.plastid_data.nucleotides.keys() if k not in completed_keys
+        ]
+        if missing_loci and self.user_params.get("individual_nexus", True):
+            log.info(
+                f"converting {len(missing_loci)} remaining alignments to NEXUS format"
+            )
+            raw_threads = self.user_params.get("num_threads", 1) or 1
+            num_workers = max(1, int(raw_threads))
+            msa_lists = split_list(missing_loci, num_workers * 2)
+            max_in_flight = num_workers * 2
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                for _, future in bounded_submit_iterator(
+                    executor, self.convert_MSAs, msa_lists, max_in_flight=max_in_flight
+                ):
+                    res = future.result()
+                    if res:
+                        with self._success_lock:
+                            self.success_list.extend(res)
 
     def convert_MSAs(self, msa_list: list[str]) -> list[tuple[str, str]]:
         """Convert each region's aligned FASTA file to NEXUS format and collect successful conversions."""
@@ -442,55 +556,114 @@ class AlignmentCoordination:
         return success_list
 
     def concat_MSAs(self):
-        """
-        Concatenated region alignments are saved to file in both NEXUS and FASTA formats,
-        located in the path specified by `user_params.out_dir`.
-        """
+        """Concatenate all successful alignments into a single alignment."""
         num_successful = len(self.success_list)
         if num_successful == 0:
-            log.warning("No successful alignments found to concatenate.")
+            log.warning("No successful alignments to concatenate.")
             return
 
         def _concat_sync():
             try:
-                with ThreadPoolExecutor(max_workers=2) as write_pool:
-                    fut_nexus = write_pool.submit(
-                        alignm_concat.write_nexus_data,
-                        filename=out_fn_nucl_concat_nexus,
-                    )
-                    fut_fasta = write_pool.submit(
-                        alignm_concat.export_fasta,
-                        filename=out_fn_nucl_concat_fasta,
-                    )
-                    fut_nexus.result()
-                    fut_fasta.result()
+                # 1. Fast linear FASTA export
+                fast_write_fasta(
+                   filename=out_fn_nucl_concat_fasta,
+                   matrix=alignm_concat.matrix,
+                   taxlabels=getattr(alignm_concat, "taxlabels", None),
+                )
+
+                # 2. Fast linear NEXUS export
+                fast_write_nexus(
+                    filename=out_fn_nucl_concat_nexus,
+                    matrix=alignm_concat.matrix,
+                    datatype=getattr(alignm_concat, "datatype", "dna"),
+                    gap=getattr(alignm_concat, "gap", "-"),
+                    missing=getattr(alignm_concat, "missing", "?"),
+                    charpartitions=getattr(alignm_concat, "charpartitions", None),
+                )
             except Exception as e:
-                log.error(f"Writer thread failure while exporting alignments: {e}")
+                log.error(f"Failure while exporting alignments: {e}")
                 raise ConcatenationError(
                     f"Failure while writing concatenated alignments: {e}"
                 ) from e
 
-        def _load_nexus_alignment(msa_name: str, nexus_path: str) -> NexusAlignment:
-            # Parse nexus directly from disk without StringIO round-trips
-            alignm_nexus = NexusAlignment(nexus_path)
+        fasta_dir = os.path.join(self.user_params.get("out_dir"), "fasta")
+
+        def _load_alignment_fast(msa_name: str, file_path: str) -> Any:
             prefix = f"{msa_name}_"
             r_prefix = f"_R_{msa_name}_"
 
-            new_matrix = {}
-            new_taxlabels = []
-            for t in alignm_nexus.taxlabels:
-                if t.startswith(r_prefix):
-                    clean_t = "concat_" + t[len(r_prefix):]
-                elif t.startswith(prefix):
-                    clean_t = "concat_" + t[len(prefix):]
-                else:
-                    clean_t = t
-                new_matrix[clean_t] = alignm_nexus.matrix[t]
-                new_taxlabels.append(clean_t)
+            # 1. Resolve whether a valid aligned FASTA exists on disk
+            fasta_path = None
+            if file_path.endswith(".nexus"):
+                candidate_fasta = os.path.join(fasta_dir, f"nucl_{msa_name}.aligned.fasta")
+                if os.path.exists(candidate_fasta) and os.path.getsize(candidate_fasta) > 0:
+                    fasta_path = candidate_fasta
+            elif os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                fasta_path = file_path
 
-            alignm_nexus.matrix = new_matrix
-            alignm_nexus.taxlabels = new_taxlabels
-            return alignm_nexus
+            # 2. Fall back to BioPython parser if FASTA is unavailable
+            if fasta_path is None:
+                if not (os.path.exists(file_path) and os.path.getsize(file_path) > 0):
+                    log.warning(f"Alignment file missing or empty for `{msa_name}`: {file_path}")
+                    return None
+                try:
+                    alignm_nexus = NexusAlignment(file_path)
+                    new_matrix = {}
+                    new_taxlabels = []
+                    for t in alignm_nexus.taxlabels:
+                        clean_t = (
+                            "concat_" + t[len(r_prefix):] if t.startswith(r_prefix)
+                            else "concat_" + t[len(prefix):] if t.startswith(prefix)
+                            else t
+                        )
+                        new_matrix[clean_t] = alignm_nexus.matrix[t]
+                        new_taxlabels.append(clean_t)
+                    alignm_nexus.matrix = new_matrix
+                    alignm_nexus.taxlabels = new_taxlabels
+                    return alignm_nexus
+                except Exception as err:
+                    log.warning(f"BioPython failed to parse NEXUS for `{msa_name}` ({file_path}): {err}")
+                    return None
+
+            # 3. Fast linear FASTA parse
+            matrix: dict[str, str] = {}
+            taxlabels: list[str] = []
+            try:
+                with open(fasta_path, "r", buffering=1024 * 1024) as f:
+                    curr_id = None
+                    chunks: list[str] = []
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith(">"):
+                            if curr_id:
+                                matrix[curr_id] = "".join(chunks)
+                                taxlabels.append(curr_id)
+                                chunks.clear()
+                            raw_id = line[1:].split()[0]
+                            if raw_id.startswith(r_prefix):
+                                curr_id = "concat_" + raw_id[len(r_prefix):]
+                            elif raw_id.startswith(prefix):
+                                curr_id = "concat_" + raw_id[len(prefix):]
+                            else:
+                                curr_id = raw_id
+                        else:
+                            chunks.append(line)
+                    if curr_id:
+                        matrix[curr_id] = "".join(chunks)
+                        taxlabels.append(curr_id)
+
+                if not taxlabels:
+                    return None
+                nchar = len(matrix[taxlabels[0]])
+                return FastNexusMatrix(matrix, taxlabels, nchar)
+            except Exception as err:
+                log.warning(f"Fast FASTA parser failed for `{msa_name}` ({fasta_path}): {err}")
+                return None
+
+        raw_threads = self.user_params.get("num_threads", 4) or 4
+        num_workers = min(max(1, int(raw_threads)), 8)
 
         log.info(
             f"concatenating all successful alignments in `{self.plastid_data.order}` order"
@@ -508,47 +681,54 @@ class AlignmentCoordination:
         )
 
         try:
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                matrices = list(pool.map(lambda pair: _load_alignment_fast(pair[0], pair[1]), self.success_list))
+
             accumulator = IncrementalNexusAccumulator()
-            for msa_name, nexus_path in self.success_list:
-                single_matrix = _load_nexus_alignment(msa_name, nexus_path)
-                accumulator.add(msa_name, single_matrix)
+            for (msa_name, _), single_matrix in zip(self.success_list, matrices):
+                if single_matrix is not None and getattr(single_matrix, "nchar", 0) > 0:
+                    accumulator.add(msa_name, single_matrix)
             alignm_concat = accumulator.finalize()
         except Exception as e:
             log.critical(f"Unable to concatenate alignments: {e}")
             raise ConcatenationError(f"Alignment concatenation failed: {e}") from e
 
-        if alignm_concat is None:
-            log.warning("Concatenation produced empty output.")
-            return
-
-        log.info(" writing concatenation to file in NEXUS and FASTA formats")
         _concat_sync()
 
     def _get_lpt_sorted_regions(self, prefix: str = "nucl") -> list[str]:
-        """Sort region keys in descending order of input file size (Longest Processing Time first).
+        """Sort region keys in descending order of computational work (LPT first).
 
-        Ties are broken alphabetically by region name to guarantee deterministic
-        scheduling.
+        Uses theoretical work W = N * L^2 from the database summary when available,
+        falling back to unaligned file size. Ties are broken deterministically by name.
         """
         out_dir = self.user_params.get("out_dir", "")
         keys = list(self.plastid_data.nucleotides.keys())
 
-        def task_weight(k: str) -> tuple[int, str]:
+        try:
+            summary = self.plastid_data.store.get_region_summary(seq_type=prefix)
+        except Exception:
+            summary = {}
+
+        def task_weight(k: str) -> tuple[float, str]:
+            # Priority 1: Calibrated complexity scaling from SQLite summary
+            if isinstance(summary, dict) and k in summary and isinstance(summary[k], dict):
+                count = summary[k].get("count", 0) or 0
+                max_len = summary[k].get("max_len", 0) or 0
+                if count > 0 and max_len > 0:
+                    exp = 2.4 if max_len >= 1800 else (2.1 if max_len >= 1200 else 2.0)
+                    return (-float(count * (max_len**exp)), k)
+
+            # Priority 2: Unaligned file size on disk
             path = os.path.join(out_dir, f"{prefix}_{k}.unalign.fasta")
             try:
                 size = os.path.getsize(path)
             except OSError:
                 size = 0
-            # Negative size for descending sort; region name for ascending tie-break
-            return (-size, k)
+            return (-float(size), k)
 
         sorted_keys = sorted(keys, key=task_weight)
         if sorted_keys:
-            top_tasks = [f"{k} ({abs(task_weight(k)[0])} B)" for k in sorted_keys[:3]]
-            log.debug(
-                f"LPT scheduling active ({len(sorted_keys)} tasks). Heaviest:"
-                f" {', '.join(top_tasks)}"
-            )
+            log.debug(f"LPT scheduling active ({len(sorted_keys)} tasks). Heaviest: {sorted_keys[:3]}")
         return sorted_keys
 
     def align_partition_regions(self, regions: list[str]) -> list[str]:
@@ -613,6 +793,9 @@ class AlignmentCoordination:
                         align_kwargs["threads"] = leased_threads
                     if supports_seq_count and seq_count is not None:
                         align_kwargs["sequence_count"] = seq_count
+                        max_len = region_summary.get(k, {}).get("max_len")
+                        if supports_max_len and max_len is not None:
+                            align_kwargs["max_len"] = max_len
                     self.aligner.align(
                         out_fn_unalign_nucl, out_fn_aligned_nucl, **align_kwargs
                     )
@@ -670,6 +853,9 @@ class AlignmentCoordination:
                         align_kwargs["threads"] = leased_threads
                     if supports_seq_count and seq_count is not None:
                         align_kwargs["sequence_count"] = seq_count
+                        max_len = region_summary.get(k, {}).get("max_len")
+                        if supports_max_len and max_len is not None:
+                            align_kwargs["max_len"] = max_len
                     self.aligner.align(
                         out_fn_unalign_prot, out_fn_aligned_prot, **align_kwargs
                     )

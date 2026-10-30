@@ -134,12 +134,13 @@ class MAFFT(AlignmentTool):
             log.info("MAFFT not found in system PATH")
 
     @staticmethod
-    def _scan_fasta_meta(input_file: str) -> tuple[int, int]:
-        """Fast binary scan to count records and find minimum effective sequence length
+    def _scan_fasta_meta(input_file: str) -> tuple[int, int, int]:
+        """Fast binary scan to count records and find min and max sequence length
         without parsing BioPython objects. Excludes stop asterisks (*), gaps (-, .),
-        and whitespace. Returns (record_count, min_seq_length)."""
+        and whitespace. Returns (record_count, min_seq_length, max_seq_length)."""
         count = 0
         min_len = float("inf")
+        max_len = 0
         curr_len = 0
         in_seq = False
         non_residues = bytes([42, 32, 9, 13, 10, 45, 46])  # ASCII for * space \t \r \n - .
@@ -154,23 +155,28 @@ class MAFFT(AlignmentTool):
                         if in_seq:
                             if curr_len < min_len:
                                 min_len = curr_len
+                            if curr_len > max_len:
+                                max_len = curr_len
                             curr_len = 0
                         in_seq = True
                     else:
                         cleaned = line.translate(None, non_residues)
                         curr_len += len(cleaned)
-                if in_seq and curr_len < min_len:
-                    min_len = curr_len
+                if in_seq:
+                    if curr_len < min_len:
+                        min_len = curr_len
+                    if curr_len > max_len:
+                        max_len = curr_len
         except OSError:
             pass
         if min_len == float("inf"):
             min_len = 0
-        return count, int(min_len)
+        return count, int(min_len), int(max_len)
 
     @staticmethod
     def _count_sequences_fast(input_file: str) -> int:
         """Backward-compatible helper returning sequence count."""
-        count, _ = MAFFT._scan_fasta_meta(input_file)
+        count, _, _ = MAFFT._scan_fasta_meta(input_file)
         return count
 
     def _build_command(
@@ -178,6 +184,7 @@ class MAFFT(AlignmentTool):
         input_file: str,
         threads: int | None = None,
         sequence_count: int | None = None,
+        max_len: int | None = None,
     ) -> list[str]:
         """Build MAFFT command line arguments with adaptive heuristics for massive datasets."""
         cmd = [self.exec_path]
@@ -211,35 +218,57 @@ class MAFFT(AlignmentTool):
                 maxiterate_num = self.tool_params.get("maxiterate", 0)
                 cmd.extend(["--maxiterate", str(maxiterate_num)])
         else:
-            # Adaptive PartTree heuristics for massive datasets
-            n_seq, min_len = (
-                (sequence_count, 6)
-                if sequence_count is not None
-                else self._scan_fasta_meta(input_file)
-            )
+            # Resolve sequence count and sequence lengths
+            if sequence_count is not None and max_len is not None:
+                n_seq = sequence_count
+                min_len = 6
+                max_l = max_len
+            elif os.path.exists(input_file):
+                scanned_count, min_len, scanned_max = self._scan_fasta_meta(input_file)
+                n_seq = sequence_count if sequence_count is not None else scanned_count
+                max_l = max_len if max_len is not None else scanned_max
+            else:
+                n_seq = sequence_count if sequence_count is not None else 0
+                min_len = 6
+                max_l = max_len if max_len is not None else 0
+
+            # Compute FLOP complexity: W = N * (L_max ^ alpha)
+            if max_l < 1000:
+                alpha = 2.0
+            elif max_l < 2500:
+                alpha = 2.2
+            else:
+                alpha = 2.4
+            work_score = float(n_seq) * (float(max_l) ** alpha) if max_l > 0 else 0.0
+
+            WORK_RETREE1_THRESHOLD = float(self.tool_params.get("work_retree1_threshold", 2.0e10))
+            WORK_PARTTREE_THRESHOLD = float(self.tool_params.get("work_parttree_threshold", 2.5e9))
+
+            qualifies_retree1 = (n_seq >= retree1_threshold) or (work_score >= WORK_RETREE1_THRESHOLD)
+            qualifies_parttree = (n_seq >= parttree_threshold) or (work_score >= WORK_PARTTREE_THRESHOLD)
 
             # PartTree requires 6-mer indexing; any sequence < 6 chars aborts MAFFT
-            if adaptive_enabled and n_seq >= parttree_threshold:
+            if adaptive_enabled and qualifies_parttree:
                 if min_len < 6:
                     log.warning(
-                        f"      adaptive heuristic: dataset N={n_seq} qualifies for PartTree, but "
-                        f"contains short sequence(s) (min length={min_len} < 6 residues). "
+                        f"      adaptive heuristic: dataset (N={n_seq}, max_len={max_l}, W={work_score:.2e}) "
+                        f"qualifies for PartTree, but contains short sequence(s) (min length={min_len} < 6). "
                         f"Bypassing PartTree to prevent aligner abort; falling back to --auto."
                     )
                     cmd.append("--auto")
-                elif n_seq >= retree1_threshold:
+                elif qualifies_retree1:
                     cmd.append("--parttree")
-                    cmd.extend(["--retree", "1"])
+                    cmd.extend(["--retree", "1", "--maxiterate", "0", "--nofft"])
                     log.info(
-                        f"      adaptive heuristic (N={n_seq} >= {retree1_threshold}):"
-                        " applied MAFFT NW-NS-PartTree1 (--parttree --retree 1)"
+                        f"      adaptive heuristic (N={n_seq}, max_len={max_l}, W={work_score:.2e}):"
+                        " applied MAFFT NW-NS-PartTree1 (--parttree --retree 1 --maxiterate 0 --nofft)"
                     )
                 else:
                     cmd.append("--parttree")
-                    cmd.extend(["--retree", "2"])
+                    cmd.extend(["--retree", "2", "--maxiterate", "0", "--nofft"])
                     log.info(
-                        f"      adaptive heuristic (N={n_seq} >= {parttree_threshold}):"
-                        " applied MAFFT NW-NS-PartTree2 (--parttree --retree 2)"
+                        f"      adaptive heuristic (N={n_seq}, max_len={max_l}, W={work_score:.2e}):"
+                        " applied MAFFT NW-NS-PartTree2 (--parttree --retree 2 --maxiterate 0 --nofft)"
                     )
             else:
                 cmd.append("--auto")
@@ -251,7 +280,10 @@ class MAFFT(AlignmentTool):
         cmd.extend(["--thread", str(mafft_threads)])
 
         # Add other MAFFT options
-        if self.tool_params.get("adjustdirection", True):
+        # adjustdirection is strictly nucleotide-only and should only be applied if explicitly enabled
+        # or when not aligning amino acid sequences
+        is_protein = os.path.basename(input_file).startswith("prot_")
+        if not is_protein and self.tool_params.get("adjustdirection", False):
             cmd.append("--adjustdirection")
 
         if self.tool_params.get("quiet"):
@@ -267,6 +299,8 @@ class MAFFT(AlignmentTool):
         output_file: str,
         threads: int | None = None,
         sequence_count: int | None = None,
+        max_len: int | None = None,
+        **kwargs: Any,
     ) -> bool:
         """Perform alignment using MAFFT with dynamic threads and adaptive heuristics."""
         if not self._validate_input(input_file, output_file):

@@ -90,5 +90,22 @@ class TestAdaptiveHeuristics(unittest.TestCase):
         self.assertNotIn("--parttree", cmd)
         self.assertIn("--auto", cmd)
 
+
+    def test_flop_complexity_triggers_parttree_for_mid_sized_long_locus(self):
+        # N=733 with L=2500 exceeds WORK_RETREE1_THRESHOLD (2.0e10), triggering PartTree1
+        mafft = MAFFT()
+        cmd = mafft._build_command("dummy.fasta", sequence_count=733, max_len=2500)
+        self.assertIn("--parttree", cmd)
+        self.assertIn("--nofft", cmd)
+        retree_idx = cmd.index("--retree")
+        self.assertEqual(cmd[retree_idx + 1], "1")
+
+    def test_flop_complexity_retains_auto_for_mid_sized_short_locus(self):
+        # N=733 with L=600 has work_score ~ 2.6e8, below threshold, using --auto
+        mafft = MAFFT()
+        cmd = mafft._build_command("dummy.fasta", sequence_count=733, max_len=600)
+        self.assertIn("--auto", cmd)
+        self.assertNotIn("--parttree", cmd)
+
 if __name__ == "__main__":
     unittest.main()
