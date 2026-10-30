@@ -19,7 +19,14 @@ from Bio.SeqRecord import SeqRecord
 from .alignment_tools import get_alignment_tool
 from .helpers import bounded_submit_iterator, split_list
 from .logging_ops import logger as log
-from .nexus_ops import ConcatenationError, IncrementalNexusAccumulator, fast_write_nexus, fast_write_fasta
+from .nexus_ops import (
+    ConcatenationError,
+    IncrementalNexusAccumulator,
+    fast_write_fasta,
+    fast_write_nexus,
+    fast_write_nexus_partitions,
+    fast_write_raxml_partitions,
+)
 from .seqfeature_ops import PlastidData
 from .task_queue import CoreBudgetPool
 
@@ -580,6 +587,19 @@ class AlignmentCoordination:
                     missing=getattr(alignm_concat, "missing", "?"),
                     charpartitions=getattr(alignm_concat, "charpartitions", None),
                 )
+
+                # 3. RAxML-NG and IQ-TREE 2 standalone partition files
+                charparts = getattr(alignm_concat, 'charpartitions', None)
+                if charparts:
+                    fast_write_raxml_partitions(
+                        filename=out_fn_nucl_concat_raxml_parts,
+                        charpartitions=charparts,
+                        datatype=getattr(alignm_concat, 'datatype', 'dna'),
+                    )
+                    fast_write_nexus_partitions(
+                        filename=out_fn_nucl_concat_nexus_parts,
+                        charpartitions=charparts,
+                    )
             except Exception as e:
                 log.error(f"Failure while exporting alignments: {e}")
                 raise ConcatenationError(
@@ -678,6 +698,14 @@ class AlignmentCoordination:
         out_fn_nucl_concat_nexus = os.path.join(
             self.user_params.get("out_dir"),
             f"nucl_{num_successful}concat.aligned.nexus",
+        )
+        out_fn_nucl_concat_raxml_parts = os.path.join(
+            self.user_params.get('out_dir'),
+            f'nucl_{num_successful}concat.partitions.txt',
+        )
+        out_fn_nucl_concat_nexus_parts = os.path.join(
+            self.user_params.get('out_dir'),
+            f'nucl_{num_successful}concat.partitions.nex',
         )
 
         try:
