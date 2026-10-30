@@ -7,7 +7,9 @@ enabling O(1) memory footprint during extraction, cleaning, and export.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +30,7 @@ class DiskBackedFeatureStore:
         self._in_transaction = False
         self._registered_regions: set[str] = set()
         self._init_db()
+        self._local = threading.local()
 
     def _init_db(self) -> None:
         cursor = self._conn.cursor()
@@ -38,8 +41,8 @@ class DiskBackedFeatureStore:
             "PRAGMA temp_store = MEMORY;"
         )  # Keep temp tables and indices in RAM
         cursor.execute(
-            "PRAGMA mmap_size = 1073741824;"
-        )  # 1 GB memory-mapped I/O direct access
+            "PRAGMA mmap_size = 3221225472;"
+        )  # 3 GB memory-mapped I/O direct access
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS regions (
@@ -203,7 +206,15 @@ class DiskBackedFeatureStore:
         for feat_name, records in pdict.items():
             inv_name = inv_map.get(feat_name)
             for rec in records:
-                taxon_name = str(rec.id)
+                if isinstance(rec, tuple):
+                    taxon_name, desc, seq_str = rec
+                    seq_id = taxon_name
+                else:
+                    taxon_name = str(rec.id)
+                    seq_id = str(rec.id) if rec.id is not None else ""
+                    desc = rec.description or ""
+                    seq_str = str(rec.seq)
+
                 if inv_name:
                     cursor.execute(
                         """
@@ -216,14 +227,13 @@ class DiskBackedFeatureStore:
                     if cursor.fetchone() is not None:
                         continue
 
-                seq_str = str(rec.seq)
                 rows.append(
                     (
                         feat_name,
                         taxon_name,
                         seq_type,
-                        str(rec.id) if rec.id is not None else "",
-                        rec.description or "",
+                        seq_id,
+                        desc,
                         seq_str,
                         len(seq_str),
                     )
@@ -334,11 +344,22 @@ class DiskBackedFeatureStore:
             for row in cursor.fetchall()
         }
 
+    def _get_read_conn(self) -> sqlite3.Connection:
+        """Thread-safe connection accessor for parallel reads under WAL mode."""
+        if self.db_path == ":memory:":
+            return self._conn
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            self._local.conn = conn
+        return self._local.conn
+
     def export_fasta(
         self, region_name: str, seq_type: str, out_path: str | Path
     ) -> int:
         """Stream FASTA file straight from disk cursor without hydrating SeqRecord instances."""
-        cursor = self._conn.cursor()
+        conn = self._get_read_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT seq_id, description, sequence
@@ -350,7 +371,8 @@ class DiskBackedFeatureStore:
         )
 
         count = 0
-        with open(out_path, "w") as hndl:
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        with open(out_path, "w", buffering=1024 * 1024) as hndl:
             for row in cursor:
                 count += 1
                 desc = row["description"]
@@ -360,6 +382,7 @@ class DiskBackedFeatureStore:
                     else f"{row['seq_id']} {desc}".strip()
                 )
                 hndl.write(f">{header}\n{row['sequence']}\n")
+        cursor.close()
         return count
 
     def close(self) -> None:

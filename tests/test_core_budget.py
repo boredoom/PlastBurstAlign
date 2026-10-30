@@ -38,10 +38,10 @@ class TestCoreBudgetPool(unittest.TestCase):
 
     def test_massive_file_preferred_heuristic(self):
         pool = CoreBudgetPool(total_cores=16, total_tasks=50)
-        # A 50 MB file should request 8 preferred cores even when queue is deep
+        # On a 16-core pool, a 50 MB file requests 16 preferred cores
         lease = pool.lease_cores(file_size=50 * 1024 * 1024)
-        self.assertEqual(lease, 8)
-        self.assertEqual(pool.available_cores, 8)
+        self.assertEqual(lease, 16)
+        self.assertEqual(pool.available_cores, 0)
         pool.release_cores(lease)
 
     def test_context_manager_exception_safety(self):

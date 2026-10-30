@@ -1,3 +1,4 @@
+import shutil
 from concurrent.futures import FIRST_COMPLETED, Executor, Future, wait
 from typing import Any, Callable, Iterable, Iterator, List, Optional, Tuple
 
@@ -81,3 +82,35 @@ def bounded_submit_iterator(
     finally:
         for fut in in_flight:
             fut.cancel()
+
+def resolve_scratch_dir(preferred: str | None = None) -> str:
+    """Resolves the highest-speed scratch directory available on the host.
+
+    Order of precedence:
+      1. Explicitly preferred path (if provided and writable)
+      2. SLURM_TMPDIR (Node-local NVMe on SLURM clusters)
+      3. LOCAL_SCRATCH / TMPDIR
+      4. /dev/shm (POSIX RAM disk, only if >= 8 GB free space available)
+      5. System tempfile fallback
+    """
+    candidates = [
+        preferred,
+        os.environ.get("SLURM_TMPDIR"),
+        os.environ.get("LOCAL_SCRATCH"),
+        os.environ.get("TMPDIR"),
+    ]
+
+    for path in candidates:
+        if path and os.path.exists(path) and os.access(path, os.W_OK):
+            return path
+
+    # Check /dev/shm for sufficient capacity
+    if os.path.exists("/dev/shm") and os.access("/dev/shm", os.W_OK):
+        try:
+            usage = shutil.disk_usage("/dev/shm")
+            if usage.free >= 8 * (1024**3):  # at least 8 GB free
+                return "/dev/shm"
+        except OSError:
+            pass
+
+    return tempfile.gettempdir()

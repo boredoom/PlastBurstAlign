@@ -53,19 +53,24 @@ class PlastidData:
     def _set_order_fun(self, user_params: dict[str, Any]):
         self.order = user_params.get("order")
 
-    def add_nucleotides(self, pdict: "PlastidDict"):
+    def add_nucleotides(
+        self, pdict: Any, inv_map: dict[str, str] | None = None
+    ) -> None:
         """Merges extracted dictionary into the disk store."""
-        is_igs = isinstance(pdict, IntergenicDict)
-        inv_map = getattr(pdict, "feat_name_inv_map", {})
+        if not pdict:
+            return
+        if inv_map is None:
+            is_igs = isinstance(pdict, IntergenicDict)
+            inv_map = getattr(pdict, "feat_name_inv_map", {}) if is_igs else None
 
         with self.store.transaction():
             self.store.add_pdict(
-                pdict, seq_type="nucl", inv_map=inv_map if is_igs else None
+                pdict, seq_type="nucl", inv_map=inv_map
             )
 
-    def add_proteins(self, pdict: "PlastidDict"):
+    def add_proteins(self, pdict: Any) -> None:
         """Merges extracted proteins into the disk store."""
-        if not self.mode.collects_proteins():
+        if not pdict or not self.mode.collects_proteins():
             return
         with self.store.transaction():
             self.store.add_pdict(pdict, seq_type="prot", inv_map=None)

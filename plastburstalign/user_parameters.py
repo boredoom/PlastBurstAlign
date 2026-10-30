@@ -58,6 +58,8 @@ class UserParameters(Dict[str, Any]):
         align_partition: Optional[int] = None,
         finalize_slurm: bool = False,
         manifest_path: Optional[str] = None,
+        individual_nexus: bool = True,
+        scratch_dir: Optional[str] = None,
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -116,6 +118,8 @@ class UserParameters(Dict[str, Any]):
         )
         self["finalize_slurm"] = bool(finalize_slurm)
         self["manifest_path"] = manifest_path
+        self._set_individual_nexus(individual_nexus)
+        self._set_scratch_dir(scratch_dir)
 
     def _set_select_mode(self, select_mode: str):
         try:
@@ -283,6 +287,15 @@ class UserParameters(Dict[str, Any]):
             log.critical(f"Invalid `{param_name}` type provided: {type(param_val)}")
             raise TypeError
 
+    def _set_individual_nexus(self, individual_nexus: bool):
+        self._test_type("individual_nexus", individual_nexus, bool)
+        self["individual_nexus"] = individual_nexus
+
+    def _set_scratch_dir(self, scratch_dir: Optional[str]):
+        if scratch_dir is not None:
+            self._test_type("scratch_dir", scratch_dir, str)
+        self["scratch_dir"] = scratch_dir
+
 
 class UserParametersScript(UserParameters):
     _construct_name_map: Dict[str, str] = {
@@ -325,6 +338,10 @@ class UserParametersScript(UserParameters):
         "finalizeslurm": "finalize_slurm",
         "manifest": "manifest_path",
         "manifest_path": "manifest_path",
+        "individual_nexus": "individual_nexus",
+        "individualnexus": "individual_nexus",
+        "scratch_dir": "scratch_dir",
+        "scratchdir": "scratch_dir",
     }
 
     def __init__(self):
@@ -595,6 +612,18 @@ class UserParametersScript(UserParameters):
             type=str,
             default=None,
             help="Path to slurm_manifest.json (used by --align-partition and --finalize-slurm)",
+        )
+        parser.add_argument(
+            "--scratch-dir",
+            type=str,
+            default=None,
+            help="High-speed node-local scratch directory (defaults to $SLURM_TMPDIR or fast temp)",
+        )
+        parser.add_argument(
+            "--individual-nexus",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Write individual NEXUS alignment files for each region (default: true; disable to minimize I/O)",
         )
         return parser
 

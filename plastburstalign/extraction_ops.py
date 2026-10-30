@@ -97,7 +97,7 @@ class ExtractAndCollect:
         if self.plastid_data.order == "seq":
             first_genome = self.plastid_data.files.pop(0)
 
-            nuc_dict, prot_dict = self._extract_recs_static(
+            res = self._extract_recs_static(
                 [first_genome],
                 mode_str,
                 collects_proteins,
@@ -107,11 +107,21 @@ class ExtractAndCollect:
                 self.min_seq_length,
                 self.verbose,
             )
-            self.plastid_data.add_nucleotides(nuc_dict)
+            if len(res) == 3:
+                nuc_dict, prot_dict, inv_map = res
+            else:
+                nuc_dict, prot_dict = res
+                inv_map = {}
+
+            self.plastid_data.add_nucleotides(nuc_dict, inv_map=inv_map)
             self.plastid_data.add_proteins(prot_dict)
 
         # Step 1. Chunk remaining files for parallel workers
-        file_lists = split_list(self.plastid_data.files, self.num_threads * 2)
+        # Target 25-40 genomes per chunk to balance IPC serialization and SQLite commit size
+        total_files = len(self.plastid_data.files)
+        target_chunk_size = max(15, min(40, total_files // (self.num_threads * 4) or 15))
+        num_chunks = max(self.num_threads * 2, (total_files + target_chunk_size - 1) // target_chunk_size)
+        file_lists = split_list(self.plastid_data.files, num_chunks)
 
         # Step 2. Use ProcessPoolExecutor to parallelize extraction with bounded queue
         mp_context = get_mp_context()
@@ -139,12 +149,18 @@ class ExtractAndCollect:
                 args_generator,
                 max_in_flight=max_in_flight,
             ):
-                nuc_dict, prot_dict = future.result()
-                self.plastid_data.add_nucleotides(nuc_dict)
+                res = future.result()
+                if len(res) == 3:
+                    nuc_dict, prot_dict, inv_map = res
+                else:
+                    nuc_dict, prot_dict = res
+                    inv_map = {}
+
+                self.plastid_data.add_nucleotides(nuc_dict, inv_map=inv_map)
                 self.plastid_data.add_proteins(prot_dict)
 
-        # Step 3. Stop execution if no nucleotides were extracted
-        if not self.plastid_data.nucleotides.items():
+        # Step 3. Stop execution if no nucleotides were extracted (O(1) DB query)
+        if len(self.plastid_data.nucleotides) == 0:
             log.critical(f"No items in main dictionary: {self.out_dir}")
             raise Exception()
 
@@ -158,7 +174,7 @@ class ExtractAndCollect:
         include_rrna: bool,
         min_seq_length: int,
         verbose: bool,
-    ) -> tuple[PlastidDict, PlastidDict | None]:
+    ) -> tuple[dict[str, list[tuple[str, str, str]]] | None, dict[str, list[tuple[str, str, str]]] | None, dict[str, str]]:
         """Static worker function isolated from sqlite connections."""
 
         class MockMode:
@@ -184,7 +200,7 @@ class ExtractAndCollect:
                 extractor = ExtractAndCollect.__new__(ExtractAndCollect)
                 extractor.plastid_data = MockData()
                 extractor.exclude_cds = exclude_cds or []
-                extractor.exclude_region = []  # Add missing property since __init__ was skipped
+                extractor.exclude_region = []
                 extractor.include_trna = include_trna
                 extractor.include_rrna = include_rrna
                 extractor.min_seq_length = min_seq_length
@@ -209,7 +225,28 @@ class ExtractAndCollect:
 
         for f in files:
             extract_rec(f, nuc_dict, prot_dict)
-        return nuc_dict, prot_dict
+
+        # Flatten records into lightweight primitive tuples to eliminate IPC pickling overhead
+        def _flatten_pdict(pdict: PlastidDict | None):
+            if not pdict:
+                return None
+            flat: dict[str, list[tuple[str, str, str]]] = {}
+            for k, recs in pdict.items():
+                flat[k] = [
+                    (
+                        str(r.id) if r.id is not None else "",
+                        r.description or "",
+                        str(r.seq),
+                    )
+                    for r in recs
+                ]
+            return flat
+
+        flat_nuc = _flatten_pdict(nuc_dict)
+        flat_prot = _flatten_pdict(prot_dict)
+        inv_map = getattr(nuc_dict, "feat_name_inv_map", {})
+
+        return flat_nuc, flat_prot, inv_map
 
     @staticmethod
     def _worker_wrapper(args_tuple):
