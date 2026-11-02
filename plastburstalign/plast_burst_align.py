@@ -9,6 +9,7 @@ import os
 import signal
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from .align_runtime import clear_stale_outputs
@@ -24,6 +25,13 @@ from .extraction_ops import DataCleaning, ExtractAndCollect
 from .logging_ops import logger as log
 from .manifest import write_run_manifest
 from .seqfeature_ops import PlastidData
+from .tree_bridge import (
+    coerce_tree_cores,
+    data_type_from_mode,
+    resolve_matrix_path,
+    resolve_partition_path,
+    write_tree_runner_scripts,
+)
 from .user_parameters import SelectMode, UserParameters
 
 # Mid-run PARTIAL manifest throttle: first locus, then every N loci or T seconds.
@@ -223,6 +231,7 @@ class PlastBurstAlign:
                 aligncoord.perform_MSAs()
                 if self.user_params.get("concat"):
                     aligncoord.concat_MSAs()
+                    self._maybe_emit_tree_commands(aligncoord)
                 ok = True
             except (KeyboardInterrupt, SystemExit):
                 interrupted = True
@@ -429,6 +438,7 @@ class PlastBurstAlign:
         try:
             aligncoord.collect_partition_nexus(successful_regions)
             aligncoord.concat_MSAs()
+            self._maybe_emit_tree_commands(aligncoord)
             ok = True
             log.info("Cluster finalization and concatenation completed successfully.")
         finally:
@@ -441,3 +451,53 @@ class PlastBurstAlign:
                 ok=ok,
                 status="COMPLETE" if ok else "FAILED",
             )
+
+    def _maybe_emit_tree_commands(
+        self, aligncoord: AlignmentCoordination | None
+    ) -> None:
+        """Write RAxML-NG / IQ-TREE runners after a successful concat when requested."""
+        params = self.user_params
+        if not params.get("emit_tree_commands") or not params.get("concat"):
+            return
+        if aligncoord is None:
+            return
+
+        out_dir = Path(
+            str(params.get("out_dir") or getattr(aligncoord, "_out_dir", ".") or ".")
+        )
+        info = getattr(aligncoord, "_supermatrix_info", None) or {}
+        written_raw = info.get("written") if isinstance(info, dict) else None
+        written: dict[str, str] = {}
+        if isinstance(written_raw, dict):
+            written = {str(k): str(v) for k, v in written_raw.items() if v}
+
+        matrix_path = resolve_matrix_path(out_dir, written)
+        if matrix_path is None:
+            log.warning(
+                "emit-tree-commands: no concatenated matrix found under %s; skipping",
+                out_dir,
+            )
+            return
+
+        partition_path = resolve_partition_path(out_dir, written)
+        cores = coerce_tree_cores(params.get("num_threads"), default=1)
+        data_type = data_type_from_mode(params.get("select_mode"))
+        scripts = write_tree_runner_scripts(
+            out_dir=out_dir,
+            matrix_path=matrix_path,
+            partition_path=partition_path,
+            cores=cores,
+            data_type=data_type,
+        )
+        names = [path.name for path in scripts.values()]
+        part_note = (
+            f"partition={partition_path.name}"
+            if partition_path is not None
+            else "unpartitioned model fallback"
+        )
+        log.info(
+            "Emitted phylogenetic inference runners (%s, matrix=%s): %s",
+            part_note,
+            matrix_path.name,
+            names,
+        )

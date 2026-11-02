@@ -74,6 +74,7 @@ class UserParameters(Dict[str, Any]):
         dashboard: Optional[bool] = None,
         estimate: bool = False,
         resume: bool = False,
+        emit_tree_commands: bool = False,
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -153,6 +154,7 @@ class UserParameters(Dict[str, Any]):
         self["dashboard"] = dashboard
         self["estimate"] = bool(estimate)
         self["resume"] = bool(resume)
+        self["emit_tree_commands"] = bool(emit_tree_commands)
 
     def _set_select_mode(self, select_mode: str):
         try:
@@ -403,6 +405,7 @@ class UserParametersScript(UserParameters):
         "dashboard": "dashboard",
         "estimate": "estimate",
         "resume": "resume",
+        "emit_tree_commands": "emit_tree_commands",
     }
 
     def __init__(self):
@@ -780,6 +783,17 @@ class UserParametersScript(UserParameters):
             ),
         )
         parser.add_argument(
+            "--emit-tree-commands",
+            dest="emit_tree_commands",
+            action="store_true",
+            default=False,
+            help=(
+                "After concatenation, write executable run_raxml_ng.sh and "
+                "run_iqtree2.sh helpers beside the supermatrix "
+                "(unpartitioned GTR+G/LG+G fallback when no partition file exists)"
+            ),
+        )
+        parser.add_argument(
             "--dashboard",
             action=argparse.BooleanOptionalAction,
             default=None,
@@ -815,6 +829,8 @@ class UserParametersScript(UserParameters):
             args_dict["estimate"] = True
         if "resume" in raw and raw["resume"]:
             args_dict["resume"] = True
+        if "emit_tree_commands" in raw and raw["emit_tree_commands"]:
+            args_dict["emit_tree_commands"] = True
         if "dashboard" in raw and raw["dashboard"] is not None:
             args_dict["dashboard"] = bool(raw["dashboard"])
         return args_dict

@@ -142,6 +142,7 @@ _USER_PARAM_KEYS = frozenset(
         "phylip",
         "time_budget",
         "resume",
+        "emit_tree_commands",
     }
 )
 
@@ -255,12 +256,35 @@ def _build_supermatrix(
             s.codon_aligned for s in sources
         )
         prefix = os.path.join(out_dir, f"nucl_{len(sources)}concat")
-        matrix.write_all(
+        written = matrix.write_all(
             prefix,
             phylip=bool(params.get("phylip", False)),
             partitions=partitions,
             codon_partitions=codon,
         )
+        if params.get("emit_tree_commands"):
+            from .tree_bridge import (
+                coerce_tree_cores,
+                data_type_from_mode,
+                resolve_matrix_path,
+                resolve_partition_path,
+                write_tree_runner_scripts,
+            )
+
+            written_map = {str(k): str(v) for k, v in written.items()}
+            matrix_path = resolve_matrix_path(Path(out_dir), written_map)
+            if matrix_path is not None:
+                scripts = write_tree_runner_scripts(
+                    out_dir=Path(out_dir),
+                    matrix_path=matrix_path,
+                    partition_path=resolve_partition_path(Path(out_dir), written_map),
+                    cores=coerce_tree_cores(params.get("num_threads"), default=1),
+                    data_type=data_type_from_mode(params.get("select_mode")),
+                )
+                log.info(
+                    "Emitted phylogenetic inference runners: %s",
+                    [p.name for p in scripts.values()],
+                )
     return matrix
 
 
