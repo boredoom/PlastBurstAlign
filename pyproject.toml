@@ -121,7 +121,6 @@ ignore_errors = true
 line-length = 88
 target-version = "py311"
 extend-exclude = [
-    "benchmarking",
     "benchmarking/legacyversions",
 ]
 
