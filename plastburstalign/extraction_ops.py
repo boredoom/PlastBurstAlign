@@ -14,6 +14,14 @@ from .genbank_scanner import GenBankParseError, fast_read_genbank
 from .helpers import ordered_bounded_map, split_list
 from .logging_ops import Logger
 from .logging_ops import logger as log
+from .qc import (
+    ACTION_EXCLUDED_FROM_FASTA,
+    ACTION_REJECTED_AT_EXTRACT,
+    ERR_POPULATION_LENGTH_OUTLIER,
+    QuarantineRecord,
+    bio_envelope_for_mode,
+    tukey_upper_fence,
+)
 
 # Package imports
 from .seqfeature_ops import (
@@ -123,14 +131,16 @@ def _note_scan(report: ExtractionReport, file: str, record: SeqRecord) -> None:
 
 def _unpack_worker_result(
     res: Any,
-) -> tuple[Any, Any, dict[str, str], ExtractionReport | None]:
+) -> tuple[Any, Any, dict[str, str], ExtractionReport | None, list[QuarantineRecord]]:
     """Accept 2-tuples, 3-tuples, and report-bearing results.
 
     Existing callers unpack ``nuc, prot, inv = result``. A :class:`ChunkResult`
-    still does that (``len`` is 3) and carries ``.report``. A plain 4-tuple whose
-    last item is an :class:`ExtractionReport` is accepted too.
+    still does that (``len`` is 3) and carries ``.report`` / ``.quarantine``.
+    A plain 4-tuple whose last item is an :class:`ExtractionReport` is accepted
+    too.
     """
     report = getattr(res, "report", None)
+    quarantine = list(getattr(res, "quarantine", None) or [])
     n = len(res)
     if n == 2:
         nuc, prot = res
@@ -141,22 +151,27 @@ def _unpack_worker_result(
         nuc, prot, inv = res[0], res[1], res[2]
         if report is None and isinstance(res[3], ExtractionReport):
             report = res[3]
+        if n >= 5 and not quarantine and isinstance(res[4], list):
+            quarantine = list(res[4])
     else:
         raise TypeError(
             f"extraction worker returned {n} value(s); expected 2, 3, or a"
             " report-bearing result"
         )
-    return nuc, prot, inv, report
+    return nuc, prot, inv, report, quarantine
 
 
 class ChunkResult(tuple):
-    """``(nucleotides, proteins, inverse_name_map)`` plus an extraction report.
+    """``(nucleotides, proteins, inverse_name_map)`` plus report / quarantine.
 
     ``nuc, prot, inv = result`` and ``len(result) == 3`` stay valid. ``report``
-    is pickled across the process boundary with the three flattened dictionaries.
+    and ``quarantine`` are pickled across the process boundary with the three
+    flattened dictionaries.
     """
 
     report: ExtractionReport
+    quarantine: list[QuarantineRecord]
+    features_scanned: int
 
     def __new__(
         cls,
@@ -164,13 +179,27 @@ class ChunkResult(tuple):
         prot: FlatRecords | None,
         inv: dict[str, str],
         report: ExtractionReport,
+        quarantine: list[QuarantineRecord] | None = None,
+        features_scanned: int = 0,
     ) -> "ChunkResult":
         obj = tuple.__new__(cls, (nuc, prot, inv))
         obj.report = report
+        obj.quarantine = list(quarantine or [])
+        obj.features_scanned = int(features_scanned or 0)
         return obj
 
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        return (ChunkResult, (self[0], self[1], self[2], self.report))
+        return (
+            ChunkResult,
+            (
+                self[0],
+                self[1],
+                self[2],
+                self.report,
+                self.quarantine,
+                self.features_scanned,
+            ),
+        )
 
 
 class ExtractAndCollect:
@@ -247,11 +276,18 @@ class ExtractAndCollect:
         report = self.plastid_data.extraction_report
 
         def commit(res) -> None:
-            nuc_dict, prot_dict, inv_map, chunk_report = _unpack_worker_result(res)
+            nuc_dict, prot_dict, inv_map, chunk_report, quarantine = (
+                _unpack_worker_result(res)
+            )
             self.plastid_data.add_nucleotides(nuc_dict, inv_map=inv_map)
             self.plastid_data.add_proteins(prot_dict)
             if chunk_report is not None:
                 report.merge(chunk_report)
+            scanned = int(getattr(res, "features_scanned", 0) or 0)
+            if scanned:
+                self.plastid_data.qc_ledger.note_scan(scanned)
+            if quarantine:
+                self.plastid_data.qc_ledger.extend(quarantine)
 
         # Position of the first not-yet-processed file in the ordered file list
         next_file_index = 0
@@ -599,6 +635,8 @@ class ExtractAndCollect:
             extractor.min_seq_length = min_seq_length
             extractor._report = report
             extractor._source_file = file
+            extractor._quarantine = quarantine_bucket
+            extractor._features_scanned = 0
             try:
                 if mode_key == "cds":
                     extractor._extract_cds(record, n_dict, p_dict)
@@ -628,8 +666,12 @@ class ExtractAndCollect:
                 )
                 if _has_regions(n_dict, p_dict):
                     report.files_with_regions += 1
+                features_scanned[0] += int(
+                    getattr(extractor, "_features_scanned", 0) or 0
+                )
                 return
 
+            features_scanned[0] += int(getattr(extractor, "_features_scanned", 0) or 0)
             if _has_regions(n_dict, p_dict):
                 report.files_ok += 1
                 report.files_with_regions += 1
@@ -662,6 +704,8 @@ class ExtractAndCollect:
         flat_nuc: FlatRecords = {}
         flat_prot: FlatRecords = {}
         inv_map: dict[str, str] = {}
+        quarantine_bucket: list[QuarantineRecord] = []
+        features_scanned = [0]
 
         # Every file is extracted into its own dictionaries so that each record can
         # be tagged with the position of the file it came from.
@@ -673,7 +717,14 @@ class ExtractAndCollect:
             _flatten_into(flat_prot, prot_dict, start_index + offset)
             inv_map.update(getattr(nuc_dict, "feat_name_inv_map", {}))
 
-        return ChunkResult(flat_nuc or None, flat_prot or None, inv_map, report)
+        return ChunkResult(
+            flat_nuc or None,
+            flat_prot or None,
+            inv_map,
+            report,
+            quarantine_bucket,
+            features_scanned[0],
+        )
 
     @staticmethod
     def _worker_wrapper(args_tuple):
@@ -700,6 +751,27 @@ class ExtractAndCollect:
         if report is not None:
             report.add_feature_failure(src, stage, label, reason)
 
+    def _note_qc(self, obj: Any) -> None:
+        """Append a Tier-1 quarantine row when a feature was rejected by QC gates."""
+        reason = getattr(obj, "_qc_reason", None)
+        if not reason:
+            return
+        bucket = getattr(self, "_quarantine", None)
+        if bucket is None:
+            return
+        bucket.append(
+            QuarantineRecord(
+                taxon_id=str(getattr(obj, "rec_name", "") or ""),
+                locus_id=str(getattr(obj, "feat_name", "") or ""),
+                reason_code=str(reason),
+                raw_coords=str(getattr(obj, "_qc_coords", "") or ""),
+                observed_len=int(getattr(obj, "_qc_observed_len", 0) or 0),
+                locus_median_len=None,
+                upper_fence=None,
+                action_taken=ACTION_REJECTED_AT_EXTRACT,
+            )
+        )
+
     def _note_rejected(
         self, rec: SeqRecord, stage: str, feature: SeqFeature, obj: Any
     ) -> None:
@@ -707,7 +779,12 @@ class ExtractAndCollect:
 
         Reading-frame skips store a plain string on the feature and stay quiet,
         matching the historical ``log_exception`` behaviour on valid input.
+        Tier-1 coordinate/topology rejects go to the quarantine ledger only
+        (not the extraction report) to avoid double-counting golden expectations.
         """
+        if getattr(obj, "_qc_reason", None):
+            self._note_qc(obj)
+            return
         exc = getattr(obj, "_exception", None)
         if isinstance(exc, BaseException):
             self._skip_feature(rec, stage, feature, exc)
@@ -756,6 +833,7 @@ class ExtractAndCollect:
             rec, record_features.cds_feats, "feature:cds"
         ):
             try:
+                self._features_scanned = getattr(self, "_features_scanned", 0) + 1
                 if len(feature.location) < self.min_seq_length:
                     continue
                 feat_name = PlastidFeature.name_cleaner.get_safe_gene(feature)
@@ -795,6 +873,7 @@ class ExtractAndCollect:
             rec, record_features.rna_feats, "feature:rna"
         ):
             try:
+                self._features_scanned = getattr(self, "_features_scanned", 0) + 1
                 if (feature.type == "tRNA" and self.include_trna) or (
                     feature.type == "rRNA" and self.include_rrna
                 ):
@@ -839,6 +918,7 @@ class ExtractAndCollect:
             current_feat = subsequent_feat
             subsequent_feat = feature
             try:
+                self._features_scanned = getattr(self, "_features_scanned", 0) + 1
                 # Early pre-checks before constructing IntergenicFeature
                 curr_name = PlastidFeature.name_cleaner.get_safe_gene(current_feat)
                 sub_name = PlastidFeature.name_cleaner.get_safe_gene(subsequent_feat)
@@ -878,13 +958,20 @@ class ExtractAndCollect:
         """
 
         def _add_intron(feature_obj: SeqFeature, offset: int):
+            self._features_scanned = getattr(self, "_features_scanned", 0) + 1
             exon_1 = feature_obj.location.parts[offset]
             exon_2 = feature_obj.location.parts[offset + 1]
-            intron_len = (
-                abs(int(exon_2.start) - int(exon_1.end))
-                if exon_2.start >= exon_1.end
-                else abs(int(exon_1.start) - int(exon_2.end))
-            )
+            # Approximate length for the early min_seq_length gate. Circular
+            # short-arc length is finalized inside IntronFeature.
+            if exon_2.start >= exon_1.end:
+                intron_len = abs(int(exon_2.start) - int(exon_1.end))
+            else:
+                parent_len = len(rec.seq) if rec.seq is not None else 0
+                topo = (rec.annotations or {}).get("topology")
+                if str(topo).lower() == "circular" and parent_len > 0:
+                    intron_len = (parent_len - int(exon_1.end)) + int(exon_2.start)
+                else:
+                    intron_len = abs(int(exon_1.end) - int(exon_2.start))
             if intron_len < self.min_seq_length:
                 return
 
@@ -896,7 +983,9 @@ class ExtractAndCollect:
             intron = IntronFeature(rec, feature_obj, offset)
             if intron.seq_obj is None:
                 self._note_rejected(rec, "feature:int", feature_obj, intron)
-                nuc_dict.add_feature(intron)
+                # Quarantined / rejected introns are not added to the dict.
+                if not getattr(intron, "_qc_reason", None):
+                    nuc_dict.add_feature(intron)
                 return
             if len(intron.seq_obj) < self.min_seq_length or self._is_region_excluded(
                 intron.feat_name
@@ -1460,6 +1549,7 @@ class ExonSpliceInsertor:
 class DataCleaning:
     def __init__(self, plastid_data: PlastidData, user_params: dict[str, Any]):
         self.plastid_data = plastid_data
+        self.user_params = user_params
         self.min_num_taxa = user_params.get("min_num_taxa")
         self.min_seq_length = user_params.get("min_seq_length")
         self.exclude_region = user_params.get("exclude_region") or []
@@ -1516,3 +1606,71 @@ class DataCleaning:
                         f"    removing {feat_name} for not reaching the minimum number of taxa defined"
                     )
                     self.plastid_data.remove_nuc(feat_name)
+
+        # Tier-2: surgical per-taxon length outliers (after whole-locus filters).
+        self.apply_tukey_length_qc()
+
+    def apply_tukey_length_qc(self) -> int:
+        """Quarantine per-taxon length outliers; deactivate loci left with N < 2.
+
+        Returns the number of taxa surgically deleted.
+        """
+        store = self.plastid_data.store
+        ledger = getattr(self.plastid_data, "qc_ledger", None)
+        mode = getattr(self.plastid_data, "mode", None)
+        mode_key = (
+            getattr(mode, "mode", None)
+            or getattr(mode, "value", None)
+            or str(mode or self.user_params.get("select_mode") or "")
+        )
+        envelope = bio_envelope_for_mode(str(mode_key))
+        deleted = 0
+        active = list(store.get_active_regions())
+        log.info(
+            "  applying Tukey length QC (k=3.0; small-N envelope="
+            f"{envelope} bp) across {len(active)} active loci"
+        )
+        for region in active:
+            pairs = list(store.iter_region_lengths(region, "nucl"))
+            if not pairs:
+                continue
+            lengths = [length for _taxon, length in pairs]
+            median, _iqr, fence = tukey_upper_fence(
+                lengths, min_n=10, k=3.0, small_n_envelope=envelope
+            )
+            outliers = [
+                (taxon, length)
+                for taxon, length in pairs
+                if float(length) > float(fence)
+            ]
+            for taxon, length in outliers:
+                store.delete_sequence(region, taxon, "nucl")
+                store.delete_sequence(region, taxon, "prot")
+                deleted += 1
+                if ledger is not None:
+                    ledger.add(
+                        QuarantineRecord(
+                            taxon_id=taxon,
+                            locus_id=region,
+                            reason_code=ERR_POPULATION_LENGTH_OUTLIER,
+                            raw_coords="",
+                            observed_len=int(length),
+                            locus_median_len=float(median),
+                            upper_fence=float(fence),
+                            action_taken=ACTION_EXCLUDED_FROM_FASTA,
+                        )
+                    )
+                log.info(
+                    f"    quarantined {taxon} from {region}: length {length} bp "
+                    f"> Tukey fence {fence:.1f} (median {median:.1f})"
+                )
+
+            remaining = list(store.iter_region_lengths(region, "nucl"))
+            if len(remaining) < 2:
+                log.info(
+                    f"    deactivating {region} after Tukey QC: "
+                    f"only {len(remaining)} active taxon sequence(s) remain "
+                    "(MAFFT requires N >= 2)"
+                )
+                self.plastid_data.remove_nuc(region)
+        return deleted

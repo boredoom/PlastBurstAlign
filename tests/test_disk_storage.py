@@ -185,6 +185,26 @@ class DiskBackedFeatureStoreTests(unittest.TestCase):
         summary = self.store.get_region_summary("nucl")
         self.assertNotIn("matK", summary)
 
+    def test_delete_sequence_and_iter_region_lengths(self) -> None:
+        self.store.add_record("psbA", "TaxA", "nucl", "TaxA_psbA", "", "ATG")
+        self.store.add_record("psbA", "TaxB", "nucl", "TaxB_psbA", "", "ATGCCC")
+        self.store.add_record("psbA", "TaxA", "prot", "TaxA_psbA", "", "M*")
+
+        lengths = list(self.store.iter_region_lengths("psbA", "nucl"))
+        self.assertEqual(lengths, [("TaxA", 3), ("TaxB", 6)])
+
+        self.assertTrue(self.store.delete_sequence("psbA", "TaxB", "nucl"))
+        self.assertFalse(self.store.delete_sequence("psbA", "TaxB", "nucl"))
+        self.assertEqual(
+            list(self.store.iter_region_lengths("psbA", "nucl")), [("TaxA", 3)]
+        )
+        # Protein row for TaxA is untouched; TaxB protein was never inserted.
+        summary = self.store.get_region_summary("nucl")
+        self.assertEqual(summary["psbA"]["count"], 1)
+        self.assertEqual(summary["psbA"]["max_len"], 3)
+        prot_summary = self.store.get_region_summary("prot")
+        self.assertEqual(prot_summary["psbA"]["count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

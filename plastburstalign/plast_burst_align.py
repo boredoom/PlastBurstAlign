@@ -113,8 +113,21 @@ class PlastBurstAlign:
         if resolved_status is None:
             resolved_status = "COMPLETE" if ok else "FAILED"
         elapsed = wall_seconds if t0 is None else max(0.0, time.monotonic() - t0)
+        out_dir = str(self.user_params.get("out_dir", "."))
+        extra: dict[str, Any] | None = None
+        plastid = getattr(self, "plastid_data", None)
+        ledger = getattr(plastid, "qc_ledger", None) if plastid is not None else None
+        # AlignmentCoordination may also hold timeout quarantine records.
+        if ledger is None and aligncoord is not None:
+            ledger = getattr(aligncoord, "qc_ledger", None)
+        if ledger is not None:
+            try:
+                ledger.write_tsv(out_dir)
+            except Exception as exc:
+                log.warning(f"could not write quarantine report: {exc}")
+            extra = {"qc_audit": ledger.summary.to_manifest_dict()}
         write_run_manifest(
-            str(self.user_params.get("out_dir", ".")),
+            out_dir,
             started_at=started_at,
             wall_seconds=elapsed,
             params=self.user_params,
@@ -141,6 +154,7 @@ class PlastBurstAlign:
             or getattr(aligner, "exec_path", None),
             ok=ok,
             status=resolved_status,
+            extra=extra,
         )
 
     def _make_partial_flusher(

@@ -12,6 +12,15 @@ from Bio.SeqRecord import SeqRecord
 
 from .extraction_report import ExtractionReport
 from .logging_ops import logger as log
+from .qc import (
+    ERR_COORDINATE_OVERRUN,
+    ERR_TOPOLOGY_INVERSION,
+    QuarantineLedger,
+    circular_intron_bounds,
+    feature_span_ok,
+    location_raw_coords,
+    record_topology,
+)
 from .storage import DiskBackedFeatureStore, FeatureStoreView
 from .user_parameters import SelectMode
 
@@ -46,6 +55,8 @@ class PlastidData:
 
         db_path = os.path.join(user_params.get("out_dir", "."), "feature_store.db")
         self.store = DiskBackedFeatureStore(db_path)
+        # Main-process quarantine ledger; workers return records via IPC payloads.
+        self.qc_ledger = QuarantineLedger()
 
         self._set_nucleotides()
         self._set_proteins()
@@ -368,6 +379,13 @@ class PlastidFeature:
         """
         self._exception = None
         self.seq_obj = None
+        self._qc_reason: str | None = None
+        self._qc_coords: str = ""
+        self._qc_observed_len: int = 0
+        self._parent_len = (
+            len(record.seq) if record is not None and record.seq is not None else 0
+        )
+        self._topology = record_topology(record)
 
         self._set_feat_name(feature)
         self._set_rec_name(record)
@@ -384,7 +402,38 @@ class PlastidFeature:
     def _set_feature(self, feature: SeqFeature):
         self.feature = feature
 
+    def _reject_qc(self, reason: str, coords: str, observed_len: int) -> None:
+        """Mark this feature as Tier-1 quarantined (sequence discarded)."""
+        self.seq_obj = None
+        self._qc_reason = reason
+        self._qc_coords = coords
+        self._qc_observed_len = int(observed_len)
+        self._set_exception(ValueError(reason))
+
+    def _location_for_span(self) -> Any:
+        """Return the Biopython location object used for span checks."""
+        feat = self.feature
+        if feat is None:
+            return None
+        return getattr(feat, "location", feat)
+
     def _set_seq_obj(self, record: SeqRecord):
+        if self.feature is None:
+            if self._qc_reason is None:
+                self._reject_qc(ERR_TOPOLOGY_INVERSION, "", 0)
+            else:
+                self.seq_obj = None
+                self._set_exception(ValueError(self._qc_reason))
+            return
+        parent_len = self._parent_len or (
+            len(record.seq) if record is not None and record.seq is not None else 0
+        )
+        topology = self._topology or record_topology(record)
+        loc = self._location_for_span()
+        ok, reason, observed = feature_span_ok(loc, parent_len, topology=topology)
+        if not ok and reason is not None:
+            self._reject_qc(reason, location_raw_coords(loc), observed)
+            return
         try:
             seq = self.feature.extract(record).seq
             bad = _INVALID_RESIDUES.search(str(seq))
@@ -393,6 +442,13 @@ class PlastidFeature:
                     f"invalid nucleotide character {bad.group()!r} at position"
                     f" {bad.start() + 1} of the feature"
                 )
+            if parent_len > 0 and len(seq) > parent_len:
+                self._reject_qc(
+                    ERR_COORDINATE_OVERRUN,
+                    location_raw_coords(loc),
+                    len(seq),
+                )
+                return
             self.seq_obj = seq
         except Exception as e:
             self._set_exception(e)
@@ -559,12 +615,29 @@ class IntronFeature(PlastidFeature):
         super()._set_feature(feature)
         exon_1 = self.feature.location.parts[self.offset]
         exon_2 = self.feature.location.parts[self.offset + 1]
-        in_order = exon_2.start >= exon_1.end
+        loc = circular_intron_bounds(exon_1, exon_2, self._parent_len, self._topology)
+        if loc is None:
+            # Long-arc / non-circular wrap → topology inversion (poison pill).
+            try:
+                long_arc = abs(int(exon_1.end) - int(exon_2.start))
+            except Exception:
+                long_arc = 0
+            self._qc_reason = ERR_TOPOLOGY_INVERSION
+            self._qc_coords = f"{exon_1}||{exon_2}"
+            self._qc_observed_len = long_arc
+            self.feature = None
+            return
+        self.feature.location = loc
 
-        if in_order:
-            self.feature.location = FeatureLocation(exon_1.end, exon_2.start)
-        else:
-            self.feature.location = FeatureLocation(exon_2.start, exon_1.end)
+    def _set_seq_obj(self, record: SeqRecord):
+        if self.feature is None:
+            if self._qc_reason is None:
+                self._reject_qc(ERR_TOPOLOGY_INVERSION, "", 0)
+            else:
+                self.seq_obj = None
+                self._set_exception(ValueError(self._qc_reason))
+            return
+        super()._set_seq_obj(record)
 
 
 class IntergenicFeature(PlastidFeature):

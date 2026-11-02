@@ -412,6 +412,42 @@ class DiskBackedFeatureStore:
             for row in cursor.fetchall()
         }
 
+    def delete_sequence(self, region_name: str, taxon_name: str, seq_type: str) -> bool:
+        """Hard-DELETE one ``(region, taxon, seq_type)`` row. Returns True if removed.
+
+        Additive surgical API for per-taxon quarantine. Does not alter schema or
+        add an ``is_quarantined`` column; summary/export simply omit deleted rows.
+        """
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM sequence_records
+            WHERE region_name = :region AND taxon_name = :taxon AND seq_type = :type;
+            """,
+            {"region": region_name, "taxon": taxon_name, "type": seq_type},
+        )
+        deleted = cursor.rowcount > 0
+        if not self._in_transaction:
+            self._conn.commit()
+        return deleted
+
+    def iter_region_lengths(
+        self, region_name: str, seq_type: str = "nucl"
+    ) -> Iterator[tuple[str, int]]:
+        """Yield ``(taxon_name, seq_len)`` for active rows of one region."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT taxon_name, seq_len
+            FROM sequence_records
+            WHERE region_name = :region AND seq_type = :type
+            ORDER BY file_index ASC, id ASC;
+            """,
+            {"region": region_name, "type": seq_type},
+        )
+        for row in cursor.fetchall():
+            yield (str(row["taxon_name"]), int(row["seq_len"]))
+
     def _get_read_conn(self) -> sqlite3.Connection:
         """Thread-safe connection accessor for parallel reads under WAL mode."""
         if self.db_path == ":memory:":

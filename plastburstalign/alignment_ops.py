@@ -29,7 +29,12 @@ from .align_runtime import (
     water_fill_preferences,
     work_for_locus,
 )
-from .alignment_tools import MAFFT, AlignmentTool, get_alignment_tool
+from .alignment_tools import (
+    MAFFT,
+    AlignmentTimeout,
+    AlignmentTool,
+    get_alignment_tool,
+)
 from .autotune import TuningPlan
 from .chunking import ChunkConfig, plan_chunks_with_reason, splice_alignments
 from .ephemeral_engine import ScratchEngine
@@ -37,6 +42,12 @@ from .events import ProgressSink
 from .helpers import bounded_submit_iterator, resolve_scratch_dir, split_list
 from .logging_ops import logger as log
 from .nexus_ops import ConcatenationError
+from .qc import (
+    QuarantineLedger,
+    QuarantineRecord,
+    alignment_timeout_seconds,
+    quarantine_failed_alignment,
+)
 from .scheduler import FanOut, LocusScheduler, SchedTask, SchedulerReport, TaskContext
 from .seqfeature_ops import PlastidData
 from .strategy import AlignmentStrategy, estimate_work
@@ -237,6 +248,12 @@ class AlignmentCoordination:
         custom_scratch = user_params.get("scratch_dir") if user_params else None
         self._scratch = ScratchEngine(custom_scratch)
         attach_shared_scratch(self.aligner, self._scratch)
+        # Prefer the PlastidData ledger (Tier-1/2); fall back to a fresh one.
+        self.qc_ledger: QuarantineLedger = (
+            getattr(plastid_data, "qc_ledger", None) or QuarantineLedger()
+        )
+        if getattr(plastid_data, "qc_ledger", None) is None:
+            plastid_data.qc_ledger = self.qc_ledger
 
     @property
     def _out_dir(self) -> str:
@@ -353,6 +370,7 @@ class AlignmentCoordination:
         "cpu_ids",
         "env",
         "pin",
+        "timeout",
     )
 
     def _resolve_num_workers(self) -> int:
@@ -402,6 +420,7 @@ class AlignmentCoordination:
         cpu_ids: Sequence[int] | None = None,
         env: Mapping[str, str] | None = None,
         pin: bool = False,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Dynamically passes only the arguments the aligner accepts."""
         align_kwargs: dict[str, Any] = {}
@@ -426,7 +445,62 @@ class AlignmentCoordination:
             align_kwargs["env"] = dict(env)
         if pin and support.get("pin"):
             align_kwargs["pin"] = True
+        if timeout is not None and support.get("timeout"):
+            align_kwargs["timeout"] = float(timeout)
         return align_kwargs
+
+    @staticmethod
+    def _pack_align_result(
+        ok: bool, quarantine: Sequence[QuarantineRecord] | None = None
+    ) -> dict[str, Any]:
+        """Standard locus-task return payload (IPC-safe quarantine transport)."""
+        return {"ok": bool(ok), "quarantine": list(quarantine or [])}
+
+    @staticmethod
+    def _quarantine_from_result(value: Any) -> list[QuarantineRecord]:
+        if isinstance(value, dict):
+            return [
+                r
+                for r in (value.get("quarantine") or [])
+                if isinstance(r, QuarantineRecord)
+            ]
+        return []
+
+    def _harvest_quarantine(self, results: Mapping[str, Any]) -> None:
+        """Record worker-returned quarantine rows on the main-process ledger only."""
+        for value in results.values():
+            records = self._quarantine_from_result(value)
+            if records:
+                self.qc_ledger.extend(records)
+
+    def _timeout_for(
+        self,
+        *,
+        work: float,
+        strategy: AlignmentStrategy,
+        alphabet: str,
+        leased_threads: int,
+    ) -> float:
+        return alignment_timeout_seconds(
+            work=float(work),
+            tier=int(strategy.tier),
+            alphabet=alphabet,
+            leased_threads=max(1, int(leased_threads)),
+        )
+
+    def _on_alignment_timeout(
+        self, input_file: str, *, locus_id: str, observed_len: int = 0
+    ) -> QuarantineRecord:
+        log.warning(
+            f"alignment watchdog: `{locus_id}` timed out; quarantining "
+            f"{os.path.basename(input_file)}"
+        )
+        return quarantine_failed_alignment(
+            input_file,
+            self._out_dir,
+            locus_id=locus_id,
+            observed_len=observed_len,
+        )
 
     def _get_worker_scratch(self) -> str:
         """Lazily creates a private scratch directory for exported unaligned FASTA."""
@@ -580,9 +654,12 @@ class AlignmentCoordination:
             sink=self.sink,
             pin=plan.pinning,
             max_workers=plan.workers,
+            keep_results=True,
         )
         report = scheduler.run(tasks, phase="align")
         self._scheduler_report = report
+        # Parent-only ledger write: workers return QuarantineRecord in payloads.
+        self._harvest_quarantine(getattr(report, "results", {}) or {})
         return report
 
     def _align_fasta(
@@ -595,7 +672,25 @@ class AlignmentCoordination:
         ctx: TaskContext,
         alphabet: str,
         algorithm_args: Sequence[str] | None = None,
-    ) -> bool:
+        timeout: float | None = None,
+        locus_id: str | None = None,
+        strategy: AlignmentStrategy | None = None,
+        work: float | None = None,
+    ) -> tuple[bool, QuarantineRecord | None]:
+        """Run one aligner call. Returns ``(ok, quarantine_or_None)``.
+
+        On :class:`AlignmentTimeout` the input FASTA is moved under
+        ``quarantine/failed_alignments/`` and a record is returned for the
+        parent coordinator to append to :attr:`qc_ledger`.
+        """
+        t_limit = timeout
+        if t_limit is None and strategy is not None and work is not None:
+            t_limit = self._timeout_for(
+                work=work,
+                strategy=strategy,
+                alphabet=alphabet,
+                leased_threads=ctx.threads,
+            )
         align_kwargs = self._build_align_kwargs(
             summary_entry,
             ctx.threads,
@@ -605,8 +700,18 @@ class AlignmentCoordination:
             cpu_ids=ctx.cpu_ids,
             env=ctx.subprocess_env(),
             pin=ctx.pinning,
+            timeout=t_limit,
         )
-        return bool(self.aligner.align(input_file, output_file, **align_kwargs))
+        try:
+            ok = bool(self.aligner.align(input_file, output_file, **align_kwargs))
+            return ok, None
+        except AlignmentTimeout:
+            record = self._on_alignment_timeout(
+                input_file,
+                locus_id=locus_id or os.path.basename(input_file),
+                observed_len=int(summary_entry.get("max_len", 0) or 0),
+            )
+            return False, record
 
     def _nuc_locus_task(
         self,
@@ -648,7 +753,7 @@ class AlignmentCoordination:
                 strategy=strategy,
                 aligned_for_success=out_aligned,
             ):
-                return True
+                return self._pack_align_result(True)
             scratch_dir = str(ctx.scratch.path) if ctx.scratch is not None else None
             unalign, is_temp = self._unaligned_fasta(
                 region, "nucl", scratch_dir=scratch_dir
@@ -686,9 +791,11 @@ class AlignmentCoordination:
                     def make_chunk(idx: int) -> SchedTask:
                         spec = plan_chunks.chunks[idx]
 
-                        def chunk_fn(cctx: TaskContext) -> tuple[str, str | None]:
+                        def chunk_fn(
+                            cctx: TaskContext,
+                        ) -> tuple[str, str | None, list[QuarantineRecord]]:
                             if not spec.needs_alignment:
-                                return ("skip", None)
+                                return ("skip", None, [])
                             in_fa = str(plan_chunks.chunk_path(chunk_dir, idx))
                             out_fa = os.path.join(
                                 chunk_dir, f"{region}.chunk{idx:02d}.aligned.fasta"
@@ -699,7 +806,7 @@ class AlignmentCoordination:
                                 "min_len": spec.min_len,
                             }
                             try:
-                                ok = self._align_fasta(
+                                ok, qrec = self._align_fasta(
                                     in_fa,
                                     out_fa,
                                     summary_entry=chunk_summary,
@@ -707,14 +814,22 @@ class AlignmentCoordination:
                                     ctx=cctx,
                                     alphabet="nucl",
                                     algorithm_args=pinned,
+                                    strategy=strategy,
+                                    work=max(1.0, work / max(1, plan_chunks.n_chunks)),
+                                    locus_id=f"{region}.chunk{idx:02d}",
                                 )
                             except Exception as exc:
-                                return ("fail", str(exc))
+                                return ("fail", str(exc), [])
+                            qlist = [qrec] if qrec is not None else []
                             if not ok or not (
                                 os.path.exists(out_fa) and os.path.getsize(out_fa) > 0
                             ):
-                                return ("fail", f"chunk {idx} produced no output")
-                            return ("ok", out_fa)
+                                return (
+                                    "fail",
+                                    f"chunk {idx} produced no output",
+                                    qlist,
+                                )
+                            return ("ok", out_fa, qlist)
 
                         return SchedTask(
                             task_id=f"c{idx:02d}",
@@ -726,7 +841,10 @@ class AlignmentCoordination:
                             max_len=spec.max_len,
                         )
 
-                    def finalize(fctx: TaskContext, results: list[Any]) -> bool:
+                    def finalize(
+                        fctx: TaskContext, results: list[Any]
+                    ) -> dict[str, Any]:
+                        quarantine_acc: list[QuarantineRecord] = []
                         try:
                             paths: list[str | None] = []
                             failed = False
@@ -735,7 +853,8 @@ class AlignmentCoordination:
                                     failed = True
                                     paths.append(None)
                                     continue
-                                status, path = result
+                                status, path, qlist = result
+                                quarantine_acc.extend(qlist or [])
                                 if status == "fail":
                                     failed = True
                                 paths.append(path if status == "ok" else None)
@@ -749,14 +868,19 @@ class AlignmentCoordination:
                                     f"chunked alignment of `{region}` failed; "
                                     "falling back to unchunked"
                                 )
-                                ok = self._align_fasta(
+                                ok, qrec = self._align_fasta(
                                     unalign,
                                     out_aligned,
                                     summary_entry=summary_entry,
                                     support=support,
                                     ctx=fctx,
                                     alphabet="nucl",
+                                    strategy=strategy,
+                                    work=work,
+                                    locus_id=region,
                                 )
+                                if qrec is not None:
+                                    quarantine_acc.append(qrec)
                                 self._record_locus(
                                     region,
                                     alphabet="nucl",
@@ -767,7 +891,7 @@ class AlignmentCoordination:
                                 )
                                 if ok:
                                     self._record_success(region, out_aligned)
-                                return ok
+                                return self._pack_align_result(ok, quarantine_acc)
                             splice_alignments(plan_chunks, paths, out_aligned)
                             self._record_locus(
                                 region,
@@ -778,7 +902,7 @@ class AlignmentCoordination:
                                 ok=True,
                             )
                             self._record_success(region, out_aligned)
-                            return True
+                            return self._pack_align_result(True, quarantine_acc)
                         finally:
                             _cleanup_unalign()
                             shutil.rmtree(chunk_dir, ignore_errors=True)
@@ -792,14 +916,18 @@ class AlignmentCoordination:
                 chunk_reason = "subdivide_skipped"
 
             try:
-                ok = self._align_fasta(
+                ok, qrec = self._align_fasta(
                     unalign,
                     out_aligned,
                     summary_entry=summary_entry,
                     support=support,
                     ctx=ctx,
                     alphabet="nucl",
+                    strategy=strategy,
+                    work=work,
+                    locus_id=region,
                 )
+                qlist = [qrec] if qrec is not None else []
                 if (
                     ok
                     and os.path.exists(out_aligned)
@@ -815,18 +943,18 @@ class AlignmentCoordination:
                         ok=True,
                         sha256=_sha256_file(out_aligned),
                     )
-                    return True
+                    return self._pack_align_result(True, qlist)
                 self._record_locus(
                     region,
                     alphabet="nucl",
                     strategy=strategy,
                     ok=False,
-                    error="no output",
+                    error="timeout" if qrec is not None else "no output",
                 )
                 log.warning(
                     f"Alignment for `{region}` produced no output: {out_aligned}"
                 )
-                return False
+                return self._pack_align_result(False, qlist)
             finally:
                 _cleanup_unalign()
 
@@ -931,7 +1059,7 @@ class AlignmentCoordination:
                 strategy=strategy,
                 aligned_for_success=out_aligned_nucl,
             ):
-                return True
+                return self._pack_align_result(True)
             scratch_dir = str(ctx.scratch.path) if ctx.scratch is not None else None
 
             unalign_prot, prot_unalign_temp = self._unaligned_fasta(
@@ -971,9 +1099,11 @@ class AlignmentCoordination:
                     def make_chunk(idx: int) -> SchedTask:
                         spec = plan_chunks.chunks[idx]
 
-                        def chunk_fn(cctx: TaskContext) -> tuple[str, str | None]:
+                        def chunk_fn(
+                            cctx: TaskContext,
+                        ) -> tuple[str, str | None, list[QuarantineRecord]]:
                             if not spec.needs_alignment:
-                                return ("skip", None)
+                                return ("skip", None, [])
                             in_fa = str(plan_chunks.chunk_path(chunk_dir, idx))
                             out_fa = os.path.join(
                                 chunk_dir, f"{region}.chunk{idx:02d}.aligned.fasta"
@@ -984,7 +1114,7 @@ class AlignmentCoordination:
                                 "min_len": spec.min_len,
                             }
                             try:
-                                ok = self._align_fasta(
+                                ok, qrec = self._align_fasta(
                                     in_fa,
                                     out_fa,
                                     summary_entry=chunk_summary,
@@ -992,14 +1122,22 @@ class AlignmentCoordination:
                                     ctx=cctx,
                                     alphabet="prot",
                                     algorithm_args=pinned,
+                                    strategy=strategy,
+                                    work=max(1.0, work / max(1, plan_chunks.n_chunks)),
+                                    locus_id=f"{region}.chunk{idx:02d}",
                                 )
                             except Exception as exc:
-                                return ("fail", str(exc))
+                                return ("fail", str(exc), [])
+                            qlist = [qrec] if qrec is not None else []
                             if not ok or not (
                                 os.path.exists(out_fa) and os.path.getsize(out_fa) > 0
                             ):
-                                return ("fail", f"chunk {idx} produced no output")
-                            return ("ok", out_fa)
+                                return (
+                                    "fail",
+                                    f"chunk {idx} produced no output",
+                                    qlist,
+                                )
+                            return ("ok", out_fa, qlist)
 
                         return SchedTask(
                             task_id=f"c{idx:02d}",
@@ -1011,7 +1149,10 @@ class AlignmentCoordination:
                             max_len=spec.max_len,
                         )
 
-                    def finalize(fctx: TaskContext, results: list[Any]) -> bool:
+                    def finalize(
+                        fctx: TaskContext, results: list[Any]
+                    ) -> dict[str, Any]:
+                        quarantine_acc: list[QuarantineRecord] = []
                         try:
                             paths: list[str | None] = []
                             failed = False
@@ -1020,7 +1161,8 @@ class AlignmentCoordination:
                                     failed = True
                                     paths.append(None)
                                     continue
-                                status, path = result
+                                status, path, qlist = result
+                                quarantine_acc.extend(qlist or [])
                                 if status == "fail":
                                     failed = True
                                 paths.append(path if status == "ok" else None)
@@ -1034,14 +1176,19 @@ class AlignmentCoordination:
                                     f"chunked protein alignment of `{region}` failed; "
                                     "falling back to unchunked"
                                 )
-                                ok = self._align_fasta(
+                                ok, qrec = self._align_fasta(
                                     unalign_prot,
                                     out_aligned_prot,
                                     summary_entry=summary_entry,
                                     support=support,
                                     ctx=fctx,
                                     alphabet="prot",
+                                    strategy=strategy,
+                                    work=work,
+                                    locus_id=region,
                                 )
+                                if qrec is not None:
+                                    quarantine_acc.append(qrec)
                             else:
                                 splice_alignments(plan_chunks, paths, out_aligned_prot)
                                 ok = True
@@ -1054,6 +1201,7 @@ class AlignmentCoordination:
                                 chunked=not failed and ok,
                                 chunk_reason=reason if not failed else "fallback",
                                 ok_align=ok,
+                                quarantine=quarantine_acc,
                             )
                         finally:
                             _cleanup_prot_inputs()
@@ -1065,13 +1213,16 @@ class AlignmentCoordination:
                 chunk_reason = reason
 
             try:
-                aligned_ok = self._align_fasta(
+                aligned_ok, qrec = self._align_fasta(
                     unalign_prot,
                     out_aligned_prot,
                     summary_entry=summary_entry,
                     support=support,
                     ctx=ctx,
                     alphabet="prot",
+                    strategy=strategy,
+                    work=work,
+                    locus_id=region,
                 )
                 return self._finish_protein_locus(
                     region,
@@ -1082,6 +1233,7 @@ class AlignmentCoordination:
                     chunked=False,
                     chunk_reason=chunk_reason,
                     ok_align=aligned_ok,
+                    quarantine=[qrec] if qrec is not None else None,
                 )
             finally:
                 _cleanup_prot_inputs()
@@ -1110,7 +1262,9 @@ class AlignmentCoordination:
         chunked: bool,
         chunk_reason: str | None,
         ok_align: bool,
-    ) -> bool:
+        quarantine: Sequence[QuarantineRecord] | None = None,
+    ) -> dict[str, Any]:
+        qlist = list(quarantine or [])
         if not (
             ok_align
             and os.path.exists(aligned_prot)
@@ -1128,7 +1282,7 @@ class AlignmentCoordination:
                 ok=False,
                 error="no protein output",
             )
-            return False
+            return self._pack_align_result(False, qlist)
         unalign_nucl, nucl_temp = self._unaligned_fasta(
             region, "nucl", scratch_dir=scratch_dir
         )
@@ -1149,7 +1303,7 @@ class AlignmentCoordination:
                     ok=False,
                     error="backtranslate empty",
                 )
-                return False
+                return self._pack_align_result(False, qlist)
             self._record_success(region, aligned_nucl)
             self._record_locus(
                 region,
@@ -1160,7 +1314,7 @@ class AlignmentCoordination:
                 ok=True,
                 sha256=_sha256_file(aligned_nucl),
             )
-            return True
+            return self._pack_align_result(True, qlist)
         except Exception as err:
             log.warning(f"Unable to conduct back-translation of `{region}`: {err}")
             self._record_locus(
@@ -1171,7 +1325,7 @@ class AlignmentCoordination:
                 ok=False,
                 error=str(err),
             )
-            return False
+            return self._pack_align_result(False, qlist)
         finally:
             if nucl_temp:
                 self._remove_quietly(unalign_nucl)

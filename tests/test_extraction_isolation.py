@@ -116,21 +116,27 @@ class ChunkResultTests(unittest.TestCase):
         self.assertEqual(restored.report.failed_files, ["/data/bad.gb"])
         self.assertEqual(restored.report.failure_for("bad.gb").stage, "parse")
 
-        plain_nuc, plain_prot, plain_inv, plain_report = _unpack_worker_result(
-            ({"x": []}, None, {})
+        plain_nuc, plain_prot, plain_inv, plain_report, plain_qc = (
+            _unpack_worker_result(({"x": []}, None, {}))
         )
         self.assertIsNone(plain_report)
         self.assertEqual(set(plain_nuc), {"x"})
         self.assertIsNone(plain_prot)
         self.assertEqual(plain_inv, {})
+        self.assertEqual(plain_qc, [])
 
-        two_nuc, two_prot, two_inv, two_report = _unpack_worker_result(
+        two_nuc, two_prot, two_inv, two_report, two_qc = _unpack_worker_result(
             ({"y": []}, None)
         )
         self.assertIsNone(two_report)
         self.assertEqual(set(two_nuc), {"y"})
         self.assertIsNone(two_prot)
         self.assertEqual(two_inv, {})
+        self.assertEqual(two_qc, [])
+
+        # Quarantine payload rides with ChunkResult across pickle.
+        self.assertEqual(restored.quarantine, [])
+        self.assertEqual(getattr(restored, "features_scanned", 0), 0)
 
 
 class FeatureIsolationTests(unittest.TestCase):
