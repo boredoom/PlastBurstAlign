@@ -73,6 +73,7 @@ class UserParameters(Dict[str, Any]):
         time_budget: Optional[str] = None,
         dashboard: Optional[bool] = None,
         estimate: bool = False,
+        resume: bool = False,
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -151,6 +152,7 @@ class UserParameters(Dict[str, Any]):
         self["time_budget"] = str(time_budget) if time_budget is not None else None
         self["dashboard"] = dashboard
         self["estimate"] = bool(estimate)
+        self["resume"] = bool(resume)
 
     def _set_select_mode(self, select_mode: str):
         try:
@@ -400,6 +402,7 @@ class UserParametersScript(UserParameters):
         "time_budget": "time_budget",
         "dashboard": "dashboard",
         "estimate": "estimate",
+        "resume": "resume",
     }
 
     def __init__(self):
@@ -767,6 +770,16 @@ class UserParametersScript(UserParameters):
             help="Print a pre-flight cost estimate after extract/clean and exit",
         )
         parser.add_argument(
+            "--resume",
+            action="store_true",
+            default=False,
+            help=(
+                "Resume a previous run: keep feature_store.db and aligned FASTA, "
+                "skip extract/clean when the store exists, and skip loci whose "
+                "checkpoints validate"
+            ),
+        )
+        parser.add_argument(
             "--dashboard",
             action=argparse.BooleanOptionalAction,
             default=None,
@@ -800,6 +813,8 @@ class UserParametersScript(UserParameters):
         raw = vars(args)
         if "estimate" in raw and raw["estimate"]:
             args_dict["estimate"] = True
+        if "resume" in raw and raw["resume"]:
+            args_dict["resume"] = True
         if "dashboard" in raw and raw["dashboard"] is not None:
             args_dict["dashboard"] = bool(raw["dashboard"])
         return args_dict

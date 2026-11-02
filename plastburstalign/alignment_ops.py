@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import os
 import shutil
@@ -7,6 +8,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from Bio import AlignIO, SeqIO
@@ -43,6 +45,80 @@ from .supermatrix import LocusSource, SupermatrixBuilder, legacy_concat_rename
 # ===================================================================
 # Module-level helper functions for multiprocessing
 # ===================================================================
+
+
+def is_locus_checkpoint_valid(
+    aligned_path: str | os.PathLike[str],
+    expected_ntax: int,
+    expected_sha256: str | None = None,
+) -> bool:
+    """Return True when an aligned FASTA is a reusable locus checkpoint.
+
+    Requires a non-empty file that ends with a trailing newline, whose FASTA
+    header count equals ``expected_ntax``. When ``expected_sha256`` is set the
+    file digest must match.
+    """
+    path = Path(aligned_path)
+    try:
+        if expected_ntax <= 0:
+            return False
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        data = path.read_bytes()
+        if not data.endswith(b"\n"):
+            return False
+        headers = sum(1 for line in data.splitlines() if line.startswith(b">"))
+        if headers != int(expected_ntax):
+            return False
+        if expected_sha256 is not None:
+            digest = hashlib.sha256(data).hexdigest()
+            if digest.lower() != str(expected_sha256).lower():
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _mode_token(mode: Any) -> str:
+    """Normalize select-mode / alphabet tokens (handles ``SelectMode`` enums)."""
+    raw = getattr(mode, "value", mode)
+    token = str(raw or "").strip().lower()
+    # ``str(SomeEnum.CDS)`` can be ``"SelectMode.CDS"`` on some Python builds.
+    if "." in token:
+        token = token.rsplit(".", 1)[-1]
+    return token
+
+
+def locus_checkpoint_paths(
+    out_dir: str | os.PathLike[str], region: str, mode: str | Any
+) -> list[Path]:
+    """Aligned FASTA artifact(s) that must validate for a resume hit.
+
+    CDS mode requires both protein and nucleotide artifacts under ``fasta/``.
+    Other modes use a single artifact: ``prot_*`` when ``mode`` starts with
+    ``prot``, otherwise ``nucl_*``.
+    """
+    fasta_dir = Path(out_dir) / "fasta"
+    token = _mode_token(mode)
+    if token == "cds":
+        return [
+            fasta_dir / f"prot_{region}.aligned.fasta",
+            fasta_dir / f"nucl_{region}.aligned.fasta",
+        ]
+    if token.startswith("prot"):
+        return [fasta_dir / f"prot_{region}.aligned.fasta"]
+    return [fasta_dir / f"nucl_{region}.aligned.fasta"]
+
+
+def _sha256_file(path: str | os.PathLike[str]) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def fast_fasta_to_nexus(fasta_path: str, nexus_path: str) -> bool:
@@ -143,6 +219,7 @@ class AlignmentCoordination:
         self._scheduler_report: SchedulerReport | None = None
         self._locus_records: list[dict[str, Any]] = []
         self._supermatrix_info: dict[str, Any] | None = None
+        self._on_locus_complete: Callable[[], None] | None = None
         self.sink: ProgressSink | None = user_params.get("progress_sink")
 
         # Create the appropriate alignment tool
@@ -425,6 +502,8 @@ class AlignmentCoordination:
         chunk_reason: str | None = None,
         ok: bool = True,
         error: str | None = None,
+        checkpoint: str | None = None,
+        sha256: str | None = None,
     ) -> None:
         record: dict[str, Any] = {
             "region": region,
@@ -441,8 +520,53 @@ class AlignmentCoordination:
             record["chunk_reason"] = chunk_reason
         if error:
             record["error"] = error
+        if checkpoint:
+            record["checkpoint"] = checkpoint
+        if sha256:
+            record["sha256"] = sha256
         with self._success_lock:
             self._locus_records.append(record)
+        if ok and self._on_locus_complete is not None:
+            try:
+                self._on_locus_complete()
+            except Exception as exc:
+                log.warning(f"locus-complete callback failed: {exc}")
+
+    def _resume_enabled(self) -> bool:
+        return bool(self.user_params.get("resume"))
+
+    def _try_checkpoint_hit(
+        self,
+        region: str,
+        *,
+        expected_ntax: int,
+        alphabet: str,
+        strategy: AlignmentStrategy | None,
+        aligned_for_success: str,
+    ) -> bool:
+        """If resume artifacts are valid, record a CHECKPOINT_HIT and return True."""
+        if not self._resume_enabled():
+            return False
+        mode = self.user_params.get("select_mode") or alphabet
+        paths = locus_checkpoint_paths(self._out_dir, region, mode)
+        if not paths:
+            return False
+        if not all(is_locus_checkpoint_valid(path, expected_ntax) for path in paths):
+            return False
+        digest = _sha256_file(paths[-1])
+        log.info(f"CHECKPOINT_HIT for `{region}` (skipping aligner)")
+        self._record_success(region, aligned_for_success)
+        self._record_locus(
+            region,
+            alphabet=alphabet,
+            strategy=strategy,
+            chunked=False,
+            chunk_reason="checkpoint_hit",
+            ok=True,
+            checkpoint="CHECKPOINT_HIT",
+            sha256=digest,
+        )
+        return True
 
     def _run_scheduler(
         self, tasks: list[SchedTask], plan: TuningPlan
@@ -517,6 +641,14 @@ class AlignmentCoordination:
             fasta_dir = os.path.join(self._out_dir, "fasta")
             os.makedirs(fasta_dir, exist_ok=True)
             out_aligned = os.path.join(fasta_dir, f"nucl_{region}.aligned.fasta")
+            if self._try_checkpoint_hit(
+                region,
+                expected_ntax=n_seq,
+                alphabet="nucl",
+                strategy=strategy,
+                aligned_for_success=out_aligned,
+            ):
+                return True
             scratch_dir = str(ctx.scratch.path) if ctx.scratch is not None else None
             unalign, is_temp = self._unaligned_fasta(
                 region, "nucl", scratch_dir=scratch_dir
@@ -681,6 +813,7 @@ class AlignmentCoordination:
                         chunked=False,
                         chunk_reason=chunk_reason,
                         ok=True,
+                        sha256=_sha256_file(out_aligned),
                     )
                     return True
                 self._record_locus(
@@ -789,14 +922,17 @@ class AlignmentCoordination:
             fasta_dir = os.path.join(out_dir, "fasta")
             os.makedirs(fasta_dir, exist_ok=True)
             out_aligned_nucl = os.path.join(fasta_dir, f"nucl_{region}.aligned.fasta")
+            # Durable under fasta/ so CDS dual-artifact resume can validate both.
+            out_aligned_prot = os.path.join(fasta_dir, f"prot_{region}.aligned.fasta")
+            if self._try_checkpoint_hit(
+                region,
+                expected_ntax=n_seq,
+                alphabet="prot",
+                strategy=strategy,
+                aligned_for_success=out_aligned_nucl,
+            ):
+                return True
             scratch_dir = str(ctx.scratch.path) if ctx.scratch is not None else None
-            if self.keep_unaligned:
-                out_aligned_prot = os.path.join(out_dir, f"prot_{region}.aligned.fasta")
-                prot_is_temp = False
-            else:
-                base = scratch_dir or self._get_worker_scratch()
-                out_aligned_prot = os.path.join(base, f"prot_{region}.aligned.fasta")
-                prot_is_temp = True
 
             unalign_prot, prot_unalign_temp = self._unaligned_fasta(
                 region, "prot", scratch_dir=scratch_dir
@@ -805,8 +941,6 @@ class AlignmentCoordination:
             def _cleanup_prot_inputs() -> None:
                 if prot_unalign_temp:
                     self._remove_quietly(unalign_prot)
-                if prot_is_temp:
-                    self._remove_quietly(out_aligned_prot)
 
             try_chunks = want_subdivide(
                 mode=subdivide_mode,
@@ -1024,6 +1158,7 @@ class AlignmentCoordination:
                 chunked=chunked,
                 chunk_reason=chunk_reason,
                 ok=True,
+                sha256=_sha256_file(aligned_nucl),
             )
             return True
         except Exception as err:

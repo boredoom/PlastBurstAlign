@@ -141,6 +141,7 @@ _USER_PARAM_KEYS = frozenset(
         "seed",
         "phylip",
         "time_budget",
+        "resume",
     }
 )
 

@@ -17,11 +17,13 @@ import math
 import os
 import platform
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from .logging_ops import logger as log
 
 MANIFEST_NAME = "run_manifest.json"
+
+RunStatus = Literal["COMPLETE", "PARTIAL", "FAILED"]
 
 
 def _dist_version(name: str) -> str | None:
@@ -126,6 +128,52 @@ def _locus_sort_key(record: Mapping[str, Any]) -> tuple[str, str]:
     return (str(record.get("region") or ""), str(record.get("mode") or ""))
 
 
+def write_atomic_json(path: str | os.PathLike[str], payload: Any) -> None:
+    """Write ``payload`` as JSON via a same-directory temp file + ``os.replace``.
+
+    Best-effort unlinks the temp on failure so ``*.tmp.<pid>`` does not leak.
+    Raises on I/O or serialization errors (unlike :func:`write_run_manifest`).
+    """
+    path_str = os.fspath(path)
+    parent = os.path.dirname(path_str) or "."
+    os.makedirs(parent, exist_ok=True)
+    temporary = f"{path_str}.tmp.{os.getpid()}"
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, allow_nan=False)
+            handle.write("\n")
+        os.replace(temporary, path_str)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def load_run_manifest(out_dir: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """Load ``out_dir/run_manifest.json`` if present; return ``None`` on miss/error."""
+    path = os.path.join(os.fspath(out_dir), MANIFEST_NAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _resolve_run_status(
+    *,
+    ok: bool,
+    status: RunStatus | str | None,
+) -> RunStatus:
+    if status is not None:
+        token = str(status).strip().upper()
+        if token in {"COMPLETE", "PARTIAL", "FAILED"}:
+            return token  # type: ignore[return-value]
+    return "COMPLETE" if ok else "FAILED"
+
+
 def write_run_manifest(
     out_dir: str,
     *,
@@ -140,15 +188,23 @@ def write_run_manifest(
     aligner_version: str | None = None,
     aligner_path: str | None = None,
     ok: bool = True,
+    status: RunStatus | str | None = None,
+    finished_at: datetime.datetime | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> str | None:
     """Write ``out_dir/run_manifest.json``. Returns the path, or ``None`` on failure.
 
     Never raises. ``loci`` are sorted by ``(region, mode)`` so raw JSON is stable
     across thread counts even when completion order differs.
+
+    ``run.status`` is ``COMPLETE`` | ``PARTIAL`` | ``FAILED``. When ``status`` is
+    omitted it is derived from ``ok`` (``COMPLETE`` / ``FAILED``). Mid-run
+    checkpoints pass ``status="PARTIAL"``.
     """
     try:
-        finished = datetime.datetime.now(datetime.timezone.utc)
+        finished = finished_at or datetime.datetime.now(datetime.timezone.utc)
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=datetime.timezone.utc)
         if started_at.tzinfo is None:
             started_at = started_at.replace(tzinfo=datetime.timezone.utc)
         scheduler: dict[str, Any] | None = None
@@ -163,12 +219,14 @@ def write_run_manifest(
             except Exception as exc:
                 scheduler = {"error": str(exc)}
         loci = sorted(list(locus_records or []), key=_locus_sort_key)
+        run_status = _resolve_run_status(ok=ok, status=status)
         document: dict[str, Any] = {
             "run": {
                 "started_at": started_at.isoformat(),
                 "finished_at": finished.isoformat(),
                 "wall_seconds": round(max(0.0, float(wall_seconds)), 6),
                 "ok": bool(ok),
+                "status": run_status,
             },
             "versions": _versions(aligner_version, aligner_path),
             "params": _params_view(params),
@@ -186,12 +244,7 @@ def write_run_manifest(
                     continue
                 document[str(key)] = _jsonify(value)
         path = os.path.join(out_dir, MANIFEST_NAME)
-        os.makedirs(out_dir, exist_ok=True)
-        temporary = f"{path}.tmp.{os.getpid()}"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(document, handle, indent=2, allow_nan=False)
-            handle.write("\n")
-        os.replace(temporary, path)
+        write_atomic_json(path, document)
         log.info(f"run manifest written to {path}")
         return path
     except Exception as exc:

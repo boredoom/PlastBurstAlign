@@ -147,6 +147,25 @@ class DiskBackedFeatureStoreTests(unittest.TestCase):
         cursor.execute("PRAGMA temp_store;")
         self.assertEqual(cursor.fetchone()[0], 2)  # MEMORY = 2
 
+        cursor.execute("PRAGMA busy_timeout;")
+        self.assertEqual(cursor.fetchone()[0], 60000)
+
+    def test_read_conn_applies_busy_timeout_and_local_pragmas(self) -> None:
+        read_conn = self.store._get_read_conn()
+        cursor = read_conn.cursor()
+        cursor.execute("PRAGMA busy_timeout;")
+        self.assertEqual(cursor.fetchone()[0], 60000)
+        cursor.execute("PRAGMA synchronous;")
+        self.assertEqual(cursor.fetchone()[0], 1)
+        cursor.execute("PRAGMA temp_store;")
+        self.assertEqual(cursor.fetchone()[0], 2)
+
+    def test_journal_mode_wal_or_truncate_fallback(self) -> None:
+        cursor = self.store._conn.cursor()
+        cursor.execute("PRAGMA journal_mode;")
+        mode = str(cursor.fetchone()[0]).lower()
+        self.assertIn(mode, {"wal", "truncate", "memory", "delete"})
+
     def test_transaction_batching_commits_atomically(self) -> None:
         with self.store.transaction():
             self.store.add_record("rbcL", "TaxA", "nucl", "TaxA_rbcL", "", "ATGCATGC")

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import datetime
 import os
+import signal
+import threading
 import time
 from typing import Any
 
@@ -23,6 +25,10 @@ from .logging_ops import logger as log
 from .manifest import write_run_manifest
 from .seqfeature_ops import PlastidData
 from .user_parameters import SelectMode, UserParameters
+
+# Mid-run PARTIAL manifest throttle: first locus, then every N loci or T seconds.
+_PARTIAL_LOCUS_INTERVAL = 5
+_PARTIAL_TIME_INTERVAL_S = 10.0
 
 
 class PlastBurstAlign:
@@ -49,10 +55,17 @@ class PlastBurstAlign:
             or self.user_params.get("finalize_slurm") is True
         )
         self.plastid_data: PlastidData | None
+        # Decide store reuse *before* PlastidData opens/creates feature_store.db.
+        out_dir = str(self.user_params.get("out_dir", "."))
+        store_path = os.path.join(out_dir, "feature_store.db")
+        self._resume_reuse_store = bool(
+            self.user_params.get("resume")
+        ) and os.path.exists(store_path)
         if not is_worker_or_final:
             # Fresh monolithic/export runs must not reuse a previous feature store
-            # or leftover unaligned FASTA files.
-            clear_stale_outputs(str(self.user_params.get("out_dir", ".")))
+            # or leftover unaligned FASTA files. Resume preserves both.
+            if not self.user_params.get("resume"):
+                clear_stale_outputs(out_dir)
             self.plastid_data = PlastidData(self.user_params)
         else:
             self.plastid_data = None
@@ -84,12 +97,18 @@ class PlastBurstAlign:
         wall_seconds: float,
         aligncoord: AlignmentCoordination | None,
         ok: bool,
+        status: str | None = None,
+        t0: float | None = None,
     ) -> None:
         aligner = getattr(aligncoord, "aligner", None) if aligncoord else None
+        resolved_status = status
+        if resolved_status is None:
+            resolved_status = "COMPLETE" if ok else "FAILED"
+        elapsed = wall_seconds if t0 is None else max(0.0, time.monotonic() - t0)
         write_run_manifest(
             str(self.user_params.get("out_dir", ".")),
             started_at=started_at,
-            wall_seconds=wall_seconds,
+            wall_seconds=elapsed,
             params=self.user_params,
             plan=getattr(aligncoord, "_plan", None) if aligncoord else None,
             locus_records=list(getattr(aligncoord, "_locus_records", []) or [])
@@ -99,44 +118,138 @@ class PlastBurstAlign:
             if aligncoord
             else None,
             scratch_stats=aligncoord.scratch_stats() if aligncoord else None,
-            supermatrix=getattr(aligncoord, "_supermatrix_info", None)
-            if aligncoord
-            else None,
+            # PARTIAL mid-run checkpoints omit the supermatrix block.
+            supermatrix=(
+                None
+                if resolved_status == "PARTIAL"
+                else (
+                    getattr(aligncoord, "_supermatrix_info", None)
+                    if aligncoord
+                    else None
+                )
+            ),
             aligner_version=getattr(aligner, "resolved_version", None),
             aligner_path=getattr(aligner, "resolved_path", None)
             or getattr(aligner, "exec_path", None),
             ok=ok,
+            status=resolved_status,
         )
+
+    def _make_partial_flusher(
+        self,
+        *,
+        started_at: datetime.datetime,
+        t0: float,
+        aligncoord_box: list[AlignmentCoordination | None],
+    ):
+        """Return a throttled callback that writes PARTIAL manifests."""
+        lock = threading.Lock()
+        state = {"loci_since": 0, "last_write": 0.0, "wrote_any": False}
+
+        def flush_partial(*, force: bool = False) -> None:
+            with lock:
+                now = time.monotonic()
+                state["loci_since"] += 0 if force else 1
+                due = (
+                    force
+                    or not state["wrote_any"]
+                    or state["loci_since"] >= _PARTIAL_LOCUS_INTERVAL
+                    or (now - state["last_write"]) >= _PARTIAL_TIME_INTERVAL_S
+                )
+                if not due:
+                    return
+                aligncoord = aligncoord_box[0]
+                self._write_manifest(
+                    started_at=started_at,
+                    wall_seconds=now - t0,
+                    aligncoord=aligncoord,
+                    ok=True,
+                    status="PARTIAL",
+                )
+                state["loci_since"] = 0
+                state["last_write"] = now
+                state["wrote_any"] = True
+
+        return flush_partial
 
     def _execute_monolithic(self):
         """Standard single-node monolithic execution."""
         started = datetime.datetime.now(datetime.timezone.utc)
         t0 = time.monotonic()
-        aligncoord: AlignmentCoordination | None = None
+        aligncoord_box: list[AlignmentCoordination | None] = [None]
         ok = False
+        interrupted = False
+        flush_partial = self._make_partial_flusher(
+            started_at=started, t0=t0, aligncoord_box=aligncoord_box
+        )
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _handle_signal(signum: int, frame: Any) -> None:
+            nonlocal interrupted
+            interrupted = True
+            log.warning(f"received signal {signum}; writing PARTIAL run manifest")
+            try:
+                flush_partial(force=True)
+            except Exception as exc:
+                log.warning(f"PARTIAL manifest on signal failed: {exc}")
+            # Restore default and re-raise so KeyboardInterrupt / termination proceeds.
+            signal.signal(signum, signal.SIG_DFL)
+            if signum == signal.SIGINT:
+                raise KeyboardInterrupt
+            os.kill(os.getpid(), signum)
+
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
         try:
             plastid_data = self._require_plastid_data()
-            extractor = ExtractAndCollect(plastid_data, self.user_params)
-            extractor.extract()
+            if self._resume_reuse_store:
+                log.info(
+                    "resume: reusing existing feature store; skipping extract/clean"
+                )
+            else:
+                if self.user_params.get("resume"):
+                    log.info("resume: feature store missing; running extract/clean")
+                extractor = ExtractAndCollect(plastid_data, self.user_params)
+                extractor.extract()
 
-            cleaner = DataCleaning(plastid_data, self.user_params)
-            cleaner.clean()
+                cleaner = DataCleaning(plastid_data, self.user_params)
+                cleaner.clean()
 
             aligncoord = AlignmentCoordination(plastid_data, self.user_params)
-            aligncoord.perform_MSAs()
-            if self.user_params.get("concat"):
-                aligncoord.concat_MSAs()
-            ok = True
+            aligncoord_box[0] = aligncoord
+            aligncoord._on_locus_complete = lambda: flush_partial(force=False)
+            try:
+                aligncoord.perform_MSAs()
+                if self.user_params.get("concat"):
+                    aligncoord.concat_MSAs()
+                ok = True
+            except (KeyboardInterrupt, SystemExit):
+                interrupted = True
+                raise
+            except Exception:
+                # Scheduler/task failures still get a FAILED final manifest.
+                raise
         finally:
-            if aligncoord is not None:
-                aligncoord.close_scratch()
-                self.last_aligncoord = aligncoord
-            self._write_manifest(
-                started_at=started,
-                wall_seconds=time.monotonic() - t0,
-                aligncoord=aligncoord,
-                ok=ok,
-            )
+            signal.signal(signal.SIGINT, previous_sigint)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            final_aligncoord = aligncoord_box[0]
+            if final_aligncoord is not None:
+                final_aligncoord.close_scratch()
+                self.last_aligncoord = final_aligncoord
+            if interrupted:
+                try:
+                    flush_partial(force=True)
+                except Exception:
+                    pass
+            else:
+                self._write_manifest(
+                    started_at=started,
+                    wall_seconds=time.monotonic() - t0,
+                    aligncoord=final_aligncoord,
+                    ok=ok,
+                    status="COMPLETE" if ok else "FAILED",
+                )
 
     def _execute_export(self):
         """Extracts and cleans features, exports partition manifest and Slurm job scripts."""
@@ -326,4 +439,5 @@ class PlastBurstAlign:
                 wall_seconds=time.monotonic() - t0,
                 aligncoord=aligncoord,
                 ok=ok,
+                status="COMPLETE" if ok else "FAILED",
             )

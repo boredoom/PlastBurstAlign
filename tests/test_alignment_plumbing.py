@@ -406,7 +406,7 @@ class WorkerSubsetTests(AlignmentFixtureMixin, unittest.TestCase):
         self.assertEqual(len(args), 5)
         self.assertEqual(seen["kwargs"], {})
         self.assertEqual(args[0], "psbA")
-        self.assertEqual(args[1], str(out / "prot_psbA.aligned.fasta"))
+        self.assertEqual(args[1], str(out / "fasta" / "prot_psbA.aligned.fasta"))
         self.assertTrue(seen["nuc_exists"])
         self.assertEqual(args[3], str(out / "fasta" / "nucl_psbA.aligned.fasta"))
         self.assertEqual(args[4], 11)
