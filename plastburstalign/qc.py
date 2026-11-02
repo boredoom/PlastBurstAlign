@@ -64,6 +64,7 @@ ACTION_REJECTED_AT_EXTRACT = "rejected_at_extract"
 ACTION_EXCLUDED_FROM_FASTA = "excluded_from_fasta"
 ACTION_MOVED_FAILED_ALIGNMENT = "moved_failed_alignment"
 
+MAX_SUBPROCESS_TIMEOUT_S = 14400.0  # 4 hours hard ceiling
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -343,6 +344,8 @@ def record_topology(record: Any) -> str | None:
 # Timeout helper
 # ---------------------------------------------------------------------------
 
+MAX_SUBPROCESS_TIMEOUT_S: float = 14400.0  # 4 hours hard ceiling
+
 
 def alignment_timeout_seconds(
     *,
@@ -350,27 +353,31 @@ def alignment_timeout_seconds(
     tier: int,
     alphabet: str,
     leased_threads: int,
-    time_model: TimeModel | None = None,
+    time_model: Any = None,
     min_seconds: float = 60.0,
+    max_seconds: float = MAX_SUBPROCESS_TIMEOUT_S,
     slack: float = 3.0,
 ) -> float:
-    """Subprocess deadline: ``max(min_seconds, slack * t_pred)``.
+    """Subprocess deadline clamped to ``[min_seconds, max_seconds]``.
 
-    ``t_pred`` is the Amdahl wall estimate from :class:`~plastburstalign.estimate.TimeModel`
-    plus fixed overhead. Reuses existing serial_fraction / max_useful_threads.
+    Calculates ``slack * t_pred`` where ``t_pred`` is the Amdahl wall estimate from
+    :class:`~plastburstalign.estimate.TimeModel` plus fixed overhead.
     """
     from .estimate import DEFAULT_TIME_MODEL
 
-    tm = time_model or DEFAULT_TIME_MODEL
+    tm = time_model if time_model is not None else DEFAULT_TIME_MODEL
     t1 = float(tm.align_seconds(work, tier, alphabet=alphabet))
     threads = max(1, int(leased_threads))
     capped = max(1, min(threads, int(tm.max_useful_threads)))
     tier_i = min(max(int(tier), 0), len(tm.serial_fraction) - 1)
     serial = float(tm.serial_fraction[tier_i])
+
     # Amdahl: T(p) = T1 * (s + (1 - s) / p)
     parallel = serial + (1.0 - serial) / float(capped)
     t_pred = t1 * parallel + float(tm.fixed_overhead_s)
-    return float(max(min_seconds, slack * t_pred))
+
+    # Clamp strictly between min_seconds and max_seconds to prevent 32-bit epoll overflow
+    return float(min(max_seconds, max(min_seconds, slack * t_pred)))
 
 
 # ---------------------------------------------------------------------------
