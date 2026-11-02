@@ -79,6 +79,12 @@ dev = [
 ]
 # Placeholder: the documentation toolchain is chosen when the docs site lands.
 docs = []
+# Optional extras for scripts/analyze_scaling_results.py (publication plots).
+bench = [
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "scipy>=1.10.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
