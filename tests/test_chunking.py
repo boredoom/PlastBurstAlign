@@ -242,7 +242,6 @@ class NoPlanTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_MAFFT, "mafft not available")
-@unittest.skipUnless(hasattr(MAFFT, "scratch_mgr"), "Requires Slice 5 alignment tools")
 class SpliceWithMafftTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -547,7 +546,6 @@ class DeterminismTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_MAFFT, "mafft not available")
 @unittest.skipIf(os.environ.get("PBA_SKIP_TIMING"), "timing report disabled")
-@unittest.skipUnless(hasattr(MAFFT, "scratch_mgr"), "Requires Slice 5 alignment tools")
 class ChunkingTimingReport(unittest.TestCase):
     """Reports (does not assert) chunked vs unchunked timing of an ~8 kb locus."""
 
