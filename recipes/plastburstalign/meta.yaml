@@ -1,0 +1,56 @@
+{% set name = "plastburstalign" %}
+{% set version = "3.0.0" %}
+
+package:
+  name: "{{ name|lower }}"
+  version: "{{ version }}"
+
+source:
+  # Packaging target for a tagged 3.0.0 release from this fork (origin).
+  # Upstream project metadata points at michaelgruenstaeudl/PlastBurstAlign.
+  url: "https://github.com/boredoom/PlastBurstAlign/archive/v{{ version }}.tar.gz"
+
+build:
+  number: 0
+  noarch: python
+  entry_points:
+    - pba = plastburstalign.__main__:main
+    - plastburstalign = plastburstalign.__main__:main
+  script: "{{ PYTHON }} -m pip install . --no-deps -vv"
+
+requirements:
+  host:
+    - python >=3.11
+    - pip
+    - setuptools >=68.0.0
+  run:
+    - python >=3.11
+    - biopython >=1.85
+    - numpy >=1.26
+    - psutil >=5.9.0
+    - rich >=13.0.0
+    - pyyaml >=6.0.2
+    - coloredlogs >=15.0
+    - mafft >=7.520
+    - clustal-omega >=1.2.4
+    - muscle >=5.1
+    - raxml-ng >=1.2.0
+    - iqtree >=2.2.0
+
+test:
+  commands:
+    - pba --version
+    - pba doctor --strict
+
+about:
+  home: "https://github.com/boredoom/PlastBurstAlign"
+  license: "BSD-3-Clause"
+  license_family: "BSD"
+  summary: "High-throughput, hardware-aware plastome alignment and supermatrix generation engine."
+  dev_url: "https://github.com/boredoom/PlastBurstAlign"
+  doc_url: "https://github.com/boredoom/PlastBurstAlign/tree/main/docs"
+
+extra:
+  recipe-maintainers:
+    - boredoom
+    - arronweber

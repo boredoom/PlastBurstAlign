@@ -1,0 +1,57 @@
+Bootstrap: docker
+From: condaforge/miniforge3:latest
+
+%labels
+    Author "Michael Gruenstaeudl, Arron Weber"
+    Version "3.0.0"
+    Description "Gold-standard HPC container for PlastBurstAlign"
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PATH=/opt/conda/envs/pba/bin:$PATH
+
+%post
+    # Prevent interactive frontend stalls during apt/conda operations
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Create dedicated environment with all alignment engines and tree tools
+    /opt/conda/bin/conda create -y -n pba -c conda-forge -c bioconda \
+        python=3.11 \
+        setuptools \
+        pip \
+        mafft>=7.525 \
+        clustalo>=1.2.4 \
+        muscle>=5.1 \
+        raxml-ng>=1.2.0 \
+        iqtree>=2.2.0 \
+        numpy>=1.26 \
+        biopython>=1.85 \
+        psutil>=5.9.0 \
+        rich>=13.0.0 \
+        pyyaml>=6.0.2 \
+        coloredlogs>=15.0
+
+    # Install this feature branch (checkpoint/resume + tree bridge + packaging).
+    # Once v3.0.0 is tagged, prefer: ...PlastBurstAlign.git@v3.0.0
+    /opt/conda/envs/pba/bin/pip install --no-cache-dir \
+        git+https://github.com/boredoom/PlastBurstAlign.git@feat/resilient-checkpoint-benchmark-dist
+
+    # Clean package caches to minimize final image footprint
+    /opt/conda/bin/conda clean -afy
+
+%test
+    export PATH=/opt/conda/envs/pba/bin:$PATH
+    pba --version
+    pba doctor --strict
+
+%runscript
+    exec /opt/conda/envs/pba/bin/pba "$@"
+
+%help
+    PlastBurstAlign: Hardware-Aware High-Throughput Plastome Alignment Engine
+
+    Usage:
+        apptainer run pba.sif [COMMAND] [OPTIONS]
+        apptainer exec pba.sif pba doctor --strict
+        apptainer exec pba.sif pba -i input_genbanks/ -o output/ -s cds --numthreads 16

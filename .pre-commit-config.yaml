@@ -13,6 +13,8 @@ repos:
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
       - id: check-yaml
+        # Bioconda meta.yaml uses Jinja2 ({% set ... %}), which is not plain YAML.
+        exclude: ^recipes/
       - id: check-added-large-files
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
