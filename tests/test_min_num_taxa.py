@@ -23,8 +23,11 @@ class MinNumTaxaTests(unittest.TestCase):
         self.input_dir.mkdir()
 
     def record(self, name="taxon1"):
+        # CDS must be in-frame without internal stops (CdsCodingValidator / Tier-1).
+        cds = "ATG" + ("GCT" * 8) + "TAA"  # 30 bp
+        parent = "A" * 10 + cds + "C" * 20
         record = SeqRecord(
-            Seq("AACGTACGTTAGCATGACCTGATCGTAGCTAGCATGCAACGTTAGCTACGTACGATCGTAC"),
+            Seq(parent),
             id=name,
             name=name,
             annotations={"molecule_type": "DNA"},
@@ -37,10 +40,14 @@ class MinNumTaxaTests(unittest.TestCase):
                 FeatureLocation(0, 10), type="tRNA", qualifiers={"gene": ["trnH-GUG"]}
             ),
             SeqFeature(
-                FeatureLocation(10, 25), type="gene", qualifiers={"gene": ["psbA"]}
+                FeatureLocation(10, 10 + len(cds)),
+                type="gene",
+                qualifiers={"gene": ["psbA"]},
             ),
             SeqFeature(
-                FeatureLocation(10, 25), type="CDS", qualifiers={"gene": ["psbA"]}
+                FeatureLocation(10, 10 + len(cds)),
+                type="CDS",
+                qualifiers={"gene": ["psbA"], "transl_table": ["11"]},
             ),
         ]
         return record

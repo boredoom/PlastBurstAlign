@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from Bio.SeqFeature import CompoundLocation, FeatureLocation
 
-    from .estimate import TimeModel
 
 # ---------------------------------------------------------------------------
 # Reason codes (stable string constants)
@@ -37,11 +36,29 @@ ERR_TOPOLOGY_INVERSION = "ERR_TOPOLOGY_INVERSION"
 ERR_POPULATION_LENGTH_OUTLIER = "ERR_POPULATION_LENGTH_OUTLIER"
 ERR_ALIGNMENT_TIMEOUT = "ERR_ALIGNMENT_TIMEOUT"
 
+# Biological edge-case codes (IR / rps12 / CDS frame / strand).
+INFO_IR_SECONDARY_DEDUPLICATED = "INFO_IR_SECONDARY_DEDUPLICATED"
+INFO_PSEUDOGENE_EXCLUDED = "INFO_PSEUDOGENE_EXCLUDED"
+ERR_RPS12_INCOMPLETE_EXONS = "ERR_RPS12_INCOMPLETE_EXONS"
+ERR_RPS12_JOIN_PARSE = "ERR_RPS12_JOIN_PARSE"
+ERR_RPS12_AMBIGUOUS_PARTS = "ERR_RPS12_AMBIGUOUS_PARTS"
+ERR_FRAMESHIFT_NON_TRIPLET = "ERR_FRAMESHIFT_NON_TRIPLET"
+ERR_INTERNAL_STOP_CODON = "ERR_INTERNAL_STOP_CODON"
+ERR_ANTISENSE_STRAND_INVERSION = "ERR_ANTISENSE_STRAND_INVERSION"
+
 REASON_CODES = (
     ERR_COORDINATE_OVERRUN,
     ERR_TOPOLOGY_INVERSION,
     ERR_POPULATION_LENGTH_OUTLIER,
     ERR_ALIGNMENT_TIMEOUT,
+    INFO_IR_SECONDARY_DEDUPLICATED,
+    INFO_PSEUDOGENE_EXCLUDED,
+    ERR_RPS12_INCOMPLETE_EXONS,
+    ERR_RPS12_JOIN_PARSE,
+    ERR_RPS12_AMBIGUOUS_PARTS,
+    ERR_FRAMESHIFT_NON_TRIPLET,
+    ERR_INTERNAL_STOP_CODON,
+    ERR_ANTISENSE_STRAND_INVERSION,
 )
 
 # Mission-approved biological envelopes for small-N Tukey fallback (bp).
@@ -63,6 +80,7 @@ QUARANTINE_TSV_COLUMNS = (
 ACTION_REJECTED_AT_EXTRACT = "rejected_at_extract"
 ACTION_EXCLUDED_FROM_FASTA = "excluded_from_fasta"
 ACTION_MOVED_FAILED_ALIGNMENT = "moved_failed_alignment"
+ACTION_DEDUPLICATED_IR_SECONDARY = "deduplicated_ir_secondary"
 
 MAX_SUBPROCESS_TIMEOUT_S = 14400.0  # 4 hours hard ceiling
 
@@ -341,10 +359,286 @@ def record_topology(record: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Timeout helper
+# CDS coding-sequence validator (GeneFeature / CDS extract path only)
 # ---------------------------------------------------------------------------
 
-MAX_SUBPROCESS_TIMEOUT_S: float = 14400.0  # 4 hours hard ceiling
+
+def _qualifier_first(qualifiers: Any, key: str) -> str | None:
+    """Return the first string value for a GenBank qualifier key, if any."""
+    if not qualifiers:
+        return None
+    values = qualifiers.get(key)
+    if not values:
+        return None
+    try:
+        return str(values[0])
+    except (TypeError, IndexError):
+        return str(values)
+
+
+class CdsCodingValidator:
+    """Validate CDS nucleotide sequences for frame and premature stops.
+
+    **CDS gating:** intended only for protein-coding CDS sequences on the
+    :class:`~plastburstalign.seqfeature_ops.GeneFeature` extract path. RNA /
+    IGS / intron modes do not call this validator.
+
+    Checks (in order):
+
+    1. ``/pseudo`` or ``/pseudogene`` → ``INFO_PSEUDOGENE_EXCLUDED`` (audit skip).
+    2. Honor ``/codon_start`` (1-based) when present.
+    3. Modulo-3: ATG + trailing incomplete codon → legacy trim; else
+       ``ERR_FRAMESHIFT_NON_TRIPLET``.
+    4. Translate with ``/transl_table`` or default 11; internal ``*`` before
+       the terminal codon → ``ERR_INTERNAL_STOP_CODON``. Missing terminal stop
+       is allowed.
+    """
+
+    @staticmethod
+    def validate(nuc_seq: Any, feature: Any) -> tuple[Any | None, str | None]:
+        """Validate a CDS coding sequence.
+
+        Returns:
+            ``(seq, None)`` on success (``seq`` may be ATG-trimmed), or
+            ``(None, reason_code)`` when the feature should be rejected /
+            excluded from matrices.
+        """
+        if nuc_seq is None:
+            return (None, ERR_FRAMESHIFT_NON_TRIPLET)
+
+        quals = getattr(feature, "qualifiers", None) or {}
+        if "pseudo" in quals or "pseudogene" in quals:
+            return (None, INFO_PSEUDOGENE_EXCLUDED)
+
+        seq = nuc_seq
+        codon_start_raw = _qualifier_first(quals, "codon_start")
+        if codon_start_raw is not None:
+            try:
+                codon_start = int(codon_start_raw)
+            except (TypeError, ValueError):
+                codon_start = 1
+            if codon_start > 1:
+                seq = seq[codon_start - 1 :]
+
+        remainder = len(seq) % 3
+        if remainder > 0:
+            # Legacy: keep CDS that start with ATG by dropping a trailing
+            # incomplete codon; otherwise fail closed.
+            if seq[:3] == "ATG":
+                seq = seq[:-remainder]
+            else:
+                return (None, ERR_FRAMESHIFT_NON_TRIPLET)
+            if len(seq) % 3 != 0:
+                return (None, ERR_FRAMESHIFT_NON_TRIPLET)
+
+        table_raw = _qualifier_first(quals, "transl_table")
+        table = 11
+        if table_raw is not None:
+            try:
+                table = int(table_raw)
+            except (TypeError, ValueError):
+                table = 11
+
+        try:
+            from Bio.Seq import Seq
+
+            aa = str(Seq(str(seq)).translate(table=table, cds=False))
+        except Exception:
+            return (None, ERR_INTERNAL_STOP_CODON)
+
+        body = aa[:-1] if aa.endswith("*") else aa
+        if "*" in body:
+            return (None, ERR_INTERNAL_STOP_CODON)
+
+        return (seq, None)
+
+
+# ---------------------------------------------------------------------------
+# Strand polarity auditor (post-DataCleaning, CDS mode only)
+# ---------------------------------------------------------------------------
+
+
+class StrandPolarityAuditor:
+    """Detect antisense-inverted plastomes from stored CDS nucleotide sequences.
+
+    Runs **after** Tukey length QC on the SQLite feature store. For each taxon,
+    scores forward vs reverse-complement coding potential under NCBI table 11
+    across anchor loci (or all active CDS loci when anchors are absent). When
+    ≥70% of evaluated loci prefer the reverse complement, every stored CDS row
+    for that taxon is surgically deleted and ledgered as
+    ``ERR_ANTISENSE_STRAND_INVERSION``.
+
+    No automatic reverse-complement correction is applied (phylogenetic safety).
+    """
+
+    ANCHOR_LOCI: tuple[str, ...] = ("rbcL", "psbA", "atpB", "matK")
+    PREFERENCE_THRESHOLD: float = 0.70
+    _START_CODONS: frozenset[str] = frozenset({"ATG", "GTG"})
+    _IR_SUFFIX = ("_IR1", "_IR2", "_ir1", "_ir2")
+
+    @classmethod
+    def base_locus_name(cls, region_name: str) -> str:
+        """Strip ``_IR1`` / ``_IR2`` suffixes for anchor matching."""
+        name = str(region_name)
+        for suffix in cls._IR_SUFFIX:
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        # Case-insensitive IR suffix (e.g. ``_Ir1``)
+        lower = name.lower()
+        if lower.endswith("_ir1") or lower.endswith("_ir2"):
+            return name[:-4]
+        return name
+
+    @classmethod
+    def score_coding(cls, nuc_seq: str, *, table: int = 11) -> tuple[int, bool]:
+        """Return ``(internal_stop_count, has_valid_start)`` under ``table``."""
+        from Bio.Seq import Seq
+
+        s = str(nuc_seq).upper().replace("U", "T")
+        if len(s) < 3:
+            return (0, False)
+        has_start = s[:3] in cls._START_CODONS
+        usable = s[: len(s) - (len(s) % 3)]
+        if len(usable) < 3:
+            return (0, has_start)
+        try:
+            aa = str(Seq(usable).translate(table=table, cds=False))
+        except Exception:
+            return (max(1, len(usable) // 3), has_start)
+        body = aa[:-1] if aa.endswith("*") else aa
+        return (body.count("*"), has_start)
+
+    @classmethod
+    def prefers_reverse_complement(cls, nuc_seq: str, *, table: int = 11) -> bool:
+        """True when RC is a valid coding frame and forward is not.
+
+        Valid RC: zero internal stops and ATG/GTG start. Forward fails when it
+        has multiple internal stops or otherwise fails translation (no start /
+        any internal stop).
+        """
+        from Bio.Seq import Seq
+
+        s_fwd, start_fwd = cls.score_coding(nuc_seq, table=table)
+        rc = str(Seq(str(nuc_seq)).reverse_complement())
+        s_rev, start_rev = cls.score_coding(rc, table=table)
+        rev_valid = s_rev == 0 and start_rev
+        fwd_valid = s_fwd == 0 and start_fwd
+        fwd_bad = (s_fwd >= 2) or (not fwd_valid)
+        return bool(rev_valid and fwd_bad)
+
+    @classmethod
+    def select_eval_regions(cls, active_regions: Sequence[str]) -> list[str]:
+        """Prefer anchor loci when present; else all active CDS region names."""
+        anchors: list[str] = []
+        for region in active_regions:
+            base = cls.base_locus_name(region)
+            if base in cls.ANCHOR_LOCI or any(
+                base.startswith(a) for a in cls.ANCHOR_LOCI
+            ):
+                anchors.append(region)
+        return anchors if anchors else list(active_regions)
+
+    @classmethod
+    def audit(
+        cls,
+        store: Any,
+        ledger: QuarantineLedger | None,
+        *,
+        remove_region: Any = None,
+        min_num_taxa: int | float | None = 2,
+        num_taxa: int | None = None,
+    ) -> int:
+        """Quarantine antisense taxa from ``store``; return deletion count.
+
+        ``remove_region`` is an optional callable ``(region_name) -> None`` used
+        to deactivate loci left with fewer than ``min_num_taxa`` (or N < 2)
+        sequences after surgical deletes — same pattern as Tukey QC.
+        """
+        active = list(store.get_active_regions())
+        if not active:
+            return 0
+        eval_regions = cls.select_eval_regions(active)
+        if not eval_regions:
+            return 0
+
+        # taxon -> list[(region, sequence)] for evaluation loci
+        by_taxon: dict[str, list[tuple[str, str]]] = {}
+        for region in eval_regions:
+            for taxon, sequence in store.iter_region_sequences(region, "nucl"):
+                by_taxon.setdefault(taxon, []).append((region, sequence))
+
+        antisense_taxa: list[str] = []
+        for taxon, pairs in by_taxon.items():
+            if not pairs:
+                continue
+            prefer_rc = sum(
+                1 for _region, seq in pairs if cls.prefers_reverse_complement(seq)
+            )
+            if (prefer_rc / len(pairs)) >= cls.PREFERENCE_THRESHOLD:
+                antisense_taxa.append(taxon)
+
+        if not antisense_taxa:
+            return 0
+
+        antisense_set = set(antisense_taxa)
+        deleted = 0
+        affected_regions: set[str] = set()
+        # Quarantine every stored CDS row for flagged taxa (all active loci).
+        for region in list(store.get_active_regions()):
+            for taxon, sequence in list(store.iter_region_sequences(region, "nucl")):
+                if taxon not in antisense_set:
+                    continue
+                store.delete_sequence(region, taxon, "nucl")
+                store.delete_sequence(region, taxon, "prot")
+                deleted += 1
+                affected_regions.add(region)
+                if ledger is not None:
+                    ledger.add(
+                        QuarantineRecord(
+                            taxon_id=taxon,
+                            locus_id=region,
+                            reason_code=ERR_ANTISENSE_STRAND_INVERSION,
+                            raw_coords="",
+                            observed_len=len(sequence),
+                            locus_median_len=None,
+                            upper_fence=None,
+                            action_taken=ACTION_EXCLUDED_FROM_FASTA,
+                        )
+                    )
+
+        for region in affected_regions:
+            remaining = list(store.iter_region_lengths(region, "nucl"))
+            if cls._should_deactivate(
+                len(remaining), min_num_taxa=min_num_taxa, num_taxa=num_taxa
+            ):
+                if remove_region is not None:
+                    remove_region(region)
+                else:
+                    store.remove_region(region)
+
+        return deleted
+
+    @staticmethod
+    def _should_deactivate(
+        remaining: int,
+        *,
+        min_num_taxa: int | float | None,
+        num_taxa: int | None,
+    ) -> bool:
+        if remaining < 2:
+            return True
+        if min_num_taxa is None:
+            return False
+        if isinstance(min_num_taxa, float):
+            if num_taxa is None or num_taxa <= 0:
+                return False
+            return (remaining / num_taxa) < min_num_taxa
+        return remaining < int(min_num_taxa)
+
+
+# ---------------------------------------------------------------------------
+# Timeout helper
+# ---------------------------------------------------------------------------
 
 
 def alignment_timeout_seconds(
@@ -450,15 +744,26 @@ def quarantine_failed_alignment(
 
 
 __all__ = [
+    "ACTION_DEDUPLICATED_IR_SECONDARY",
     "ACTION_EXCLUDED_FROM_FASTA",
     "ACTION_MOVED_FAILED_ALIGNMENT",
     "ACTION_REJECTED_AT_EXTRACT",
     "BIO_ENVELOPE_CDS_BP",
     "BIO_ENVELOPE_INTRON_BP",
+    "CdsCodingValidator",
+    "StrandPolarityAuditor",
     "ERR_ALIGNMENT_TIMEOUT",
+    "ERR_ANTISENSE_STRAND_INVERSION",
     "ERR_COORDINATE_OVERRUN",
+    "ERR_FRAMESHIFT_NON_TRIPLET",
+    "ERR_INTERNAL_STOP_CODON",
     "ERR_POPULATION_LENGTH_OUTLIER",
+    "ERR_RPS12_AMBIGUOUS_PARTS",
+    "ERR_RPS12_INCOMPLETE_EXONS",
+    "ERR_RPS12_JOIN_PARSE",
     "ERR_TOPOLOGY_INVERSION",
+    "INFO_IR_SECONDARY_DEDUPLICATED",
+    "INFO_PSEUDOGENE_EXCLUDED",
     "QCAuditSummary",
     "QUARANTINE_TSV_COLUMNS",
     "QuarantineLedger",

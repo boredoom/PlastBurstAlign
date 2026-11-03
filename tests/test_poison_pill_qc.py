@@ -13,16 +13,26 @@ from Bio.SeqFeature import CompoundLocation, FeatureLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
 
 from plastburstalign.qc import (
+    ACTION_DEDUPLICATED_IR_SECONDARY,
     ACTION_EXCLUDED_FROM_FASTA,
     ACTION_MOVED_FAILED_ALIGNMENT,
     ACTION_REJECTED_AT_EXTRACT,
     BIO_ENVELOPE_CDS_BP,
     BIO_ENVELOPE_INTRON_BP,
     ERR_ALIGNMENT_TIMEOUT,
+    ERR_ANTISENSE_STRAND_INVERSION,
     ERR_COORDINATE_OVERRUN,
+    ERR_FRAMESHIFT_NON_TRIPLET,
+    ERR_INTERNAL_STOP_CODON,
     ERR_POPULATION_LENGTH_OUTLIER,
+    ERR_RPS12_AMBIGUOUS_PARTS,
+    ERR_RPS12_INCOMPLETE_EXONS,
+    ERR_RPS12_JOIN_PARSE,
     ERR_TOPOLOGY_INVERSION,
+    INFO_IR_SECONDARY_DEDUPLICATED,
+    INFO_PSEUDOGENE_EXCLUDED,
     QUARANTINE_TSV_COLUMNS,
+    REASON_CODES,
     QuarantineLedger,
     QuarantineRecord,
     alignment_timeout_seconds,
@@ -105,6 +115,63 @@ class TukeyHelperTests(unittest.TestCase):
             work=1.0, tier=0, alphabet="nucl", leased_threads=1
         )
         self.assertGreaterEqual(t, 60.0)
+
+    def test_bio_edge_reason_codes_registered(self) -> None:
+        expected = (
+            INFO_IR_SECONDARY_DEDUPLICATED,
+            INFO_PSEUDOGENE_EXCLUDED,
+            ERR_RPS12_INCOMPLETE_EXONS,
+            ERR_RPS12_JOIN_PARSE,
+            ERR_RPS12_AMBIGUOUS_PARTS,
+            ERR_FRAMESHIFT_NON_TRIPLET,
+            ERR_INTERNAL_STOP_CODON,
+            ERR_ANTISENSE_STRAND_INVERSION,
+        )
+        for code in expected:
+            self.assertIn(code, REASON_CODES)
+        self.assertEqual(ACTION_DEDUPLICATED_IR_SECONDARY, "deduplicated_ir_secondary")
+
+    def test_info_row_tsv_roundtrip(self) -> None:
+        ledger = QuarantineLedger()
+        ledger.add(
+            QuarantineRecord(
+                taxon_id="TaxB",
+                locus_id="ndhB",
+                reason_code=INFO_IR_SECONDARY_DEDUPLICATED,
+                raw_coords="1000..2000",
+                observed_len=1000,
+                locus_median_len=None,
+                upper_fence=None,
+                action_taken=ACTION_DEDUPLICATED_IR_SECONDARY,
+            )
+        )
+        ledger.add(
+            QuarantineRecord(
+                taxon_id="TaxB",
+                locus_id="ycf1",
+                reason_code=INFO_PSEUDOGENE_EXCLUDED,
+                raw_coords="3000..4000",
+                observed_len=1000,
+                locus_median_len=None,
+                upper_fence=None,
+                action_taken=ACTION_REJECTED_AT_EXTRACT,
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = ledger.write_tsv(tmp)
+            with open(path, encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle, delimiter="\t")
+                self.assertEqual(tuple(reader.fieldnames or ()), QUARANTINE_TSV_COLUMNS)
+                rows = list(reader)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["reason_code"], INFO_IR_SECONDARY_DEDUPLICATED)
+            self.assertEqual(rows[0]["action_taken"], ACTION_DEDUPLICATED_IR_SECONDARY)
+            self.assertEqual(rows[1]["reason_code"], INFO_PSEUDOGENE_EXCLUDED)
+        summary = ledger.summary.to_manifest_dict()
+        self.assertEqual(summary["total_quarantined"], 2)
+        self.assertEqual(
+            summary["quarantined_by_code"][INFO_IR_SECONDARY_DEDUPLICATED], 1
+        )
 
 
 class FeatureSpanHelperTests(unittest.TestCase):

@@ -42,6 +42,8 @@ def _extractor(source: str = "genome.gb") -> tuple[ExtractAndCollect, Extraction
     ext.include_trna = True
     ext.include_rrna = True
     ext.min_seq_length = 3
+    ext.ir_mode = "single"
+    ext._quarantine = []
     ext._report = report
     ext._source_file = source
     return ext, report

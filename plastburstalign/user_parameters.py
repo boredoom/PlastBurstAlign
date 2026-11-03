@@ -75,6 +75,7 @@ class UserParameters(Dict[str, Any]):
         estimate: bool = False,
         resume: bool = False,
         emit_tree_commands: bool = False,
+        ir_mode: str = "single",
     ):
         """
         A dictionary that validates user parameters that are to be used within the package.
@@ -117,6 +118,7 @@ class UserParameters(Dict[str, Any]):
         self._set_fileext(fileext)
         self._set_exclude_fullcds(exclude_fullcds)
         self._set_exclude_region(exclude_region)
+        self._set_ir_mode(ir_mode)
         self._set_min_seq_length(min_seq_length)
         self._set_min_num_taxa(min_num_taxa)
         self._set_num_threads(num_threads)
@@ -204,13 +206,22 @@ class UserParameters(Dict[str, Any]):
         self["fileext"] = fileext
 
     def _set_exclude_fullcds(self, exclude_fullcds: Optional[List[str]]):
-        if not exclude_fullcds:
+        # ``None`` keeps the historical default (exclude rps12). Explicit clear
+        # sentinels ``none`` / ``""`` / ``"-"`` (or an empty list) mean no CDS
+        # exclusions — required to opt into assembled rps12.
+        if exclude_fullcds is None:
             exclude_fullcds = ["rps12"]
+        else:
+            self._test_type("exclude_fullcds", exclude_fullcds, list)
+            tokens = [str(x).strip().lower() for x in exclude_fullcds]
+            if (not tokens) or all(t in {"none", "", "-"} for t in tokens):
+                exclude_fullcds = []
         self._test_type("exclude_fullcds", exclude_fullcds, list)
-        self["exclude_fullcds"] = exclude_fullcds
+        self["exclude_fullcds"] = list(exclude_fullcds)
         if self["select_mode"] == "igs":
             # Excluding matK is necessary, as matK is located inside trnK
-            self["exclude_fullcds"].append("matK")
+            if "matK" not in self["exclude_fullcds"]:
+                self["exclude_fullcds"].append("matK")
 
     def _set_exclude_region(self, exclude_region: Optional[List[str]]):
         if not exclude_region:
@@ -220,6 +231,14 @@ class UserParameters(Dict[str, Any]):
             log.critical("Excluded region list can not be used for select mode `cds`")
             raise ValueError
         self["exclude_region"] = exclude_region
+
+    def _set_ir_mode(self, ir_mode: str):
+        self._test_type("ir_mode", ir_mode, str)
+        mode = ir_mode.strip().lower()
+        if mode not in {"single", "both"}:
+            log.critical(f"Invalid `ir_mode` value provided: {ir_mode}")
+            raise ValueError
+        self["ir_mode"] = mode
 
     def _set_min_seq_length(self, min_seq_length: int):
         self._test_type("min_seq_length", min_seq_length, int)
@@ -356,6 +375,7 @@ class UserParametersScript(UserParameters):
         "fileext": "fileext",
         "exclcds": "exclude_fullcds",
         "exclreg": "exclude_region",
+        "ir_mode": "ir_mode",
         "minseqlength": "min_seq_length",
         "minnumtaxa": "min_num_taxa",
         "numthreads": "num_threads",
@@ -513,7 +533,11 @@ class UserParametersScript(UserParameters):
             type=str,
             nargs="+",
             required=False,
-            help="(Optional) List of genes to be excluded (CDS, RNA, and INT/IGS involving these genes)",
+            help=(
+                "(Optional) List of genes to be excluded (CDS, RNA, and INT/IGS "
+                "involving these genes). Pass ``none``, ``-``, or ``''`` to clear "
+                "the default rps12 exclusion."
+            ),
         )
         parser.add_argument(
             "--exclreg",
@@ -525,6 +549,15 @@ class UserParametersScript(UserParameters):
                 "(Optional) List of regions to be excluded (specific regions by name). "
                 "Using the argument will lead to an exception for select mode `cds` as "
                 "`exclcds` should be used for that purpose."
+            ),
+        )
+        parser.add_argument(
+            "--ir-mode",
+            choices=["single", "both"],
+            default="single",
+            help=(
+                "IR deduplication mode: 'single' retains canonical copy; "
+                "'both' keeps copies suffixed as _IR1/_IR2."
             ),
         )
         parser.add_argument(

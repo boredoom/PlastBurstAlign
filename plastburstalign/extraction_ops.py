@@ -1,5 +1,6 @@
 import bisect
 import os
+from collections import defaultdict
 from collections.abc import Generator, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -19,6 +20,7 @@ from .qc import (
     ACTION_REJECTED_AT_EXTRACT,
     ERR_POPULATION_LENGTH_OUTLIER,
     QuarantineRecord,
+    StrandPolarityAuditor,
     bio_envelope_for_mode,
     tukey_upper_fence,
 )
@@ -35,6 +37,7 @@ from .seqfeature_ops import (
     ProteinFeature,
 )
 from .task_queue import get_mp_context
+from .trans_splice import Rps12Reconstructor, classify_ir_copies
 
 # Flattened extraction results: region -> [(record id, description, sequence, file index)]
 FlatRecords = dict[str, list[tuple[str, str, str, int]]]
@@ -223,6 +226,7 @@ class ExtractAndCollect:
         self.include_trna = user_params.get("include_trna", True)
         self.include_rrna = user_params.get("include_rrna", True)
         self.exclude_region = set(user_params.get("exclude_region") or [])
+        self.ir_mode = str(user_params.get("ir_mode") or "single").strip().lower()
         min_len = user_params.get("min_seq_length")
         self.min_seq_length = min_len if min_len is not None else 3
         self._set_extract_fun()
@@ -306,6 +310,7 @@ class ExtractAndCollect:
                         self.include_rrna,
                         self.min_seq_length,
                         self.verbose,
+                        self.ir_mode,
                         next_file_index,
                     )
                 )
@@ -350,6 +355,7 @@ class ExtractAndCollect:
                         self.include_rrna,
                         self.min_seq_length,
                         self.verbose,
+                        self.ir_mode,
                         next_file_index,
                     )
                 )
@@ -562,6 +568,7 @@ class ExtractAndCollect:
         include_rrna: bool,
         min_seq_length: int,
         verbose: bool,
+        ir_mode: str = "single",
         start_index: int = 0,
     ) -> ChunkResult:
         """Static worker function isolated from sqlite connections.
@@ -633,6 +640,7 @@ class ExtractAndCollect:
             extractor.include_trna = include_trna
             extractor.include_rrna = include_rrna
             extractor.min_seq_length = min_seq_length
+            extractor.ir_mode = str(ir_mode or "single").strip().lower()
             extractor._report = report
             extractor._source_file = file
             extractor._quarantine = quarantine_bucket
@@ -829,16 +837,34 @@ class ExtractAndCollect:
         Extracts all CDS (coding sequences = genes) from a given sequence record
         """
         record_features = RecordFeatures(rec, self.exclude_cds)
-        for feature in self._iter_features(
-            rec, record_features.cds_feats, "feature:cds"
-        ):
+        features = list(
+            self._iter_features(rec, record_features.cds_feats, "feature:cds")
+        )
+        consumed: set[int] = set()
+        exclude = set(self.exclude_cds or [])
+
+        # Pre-pass: assemble trans-spliced rps12 when not excluded.
+        if "rps12" not in exclude:
+            try:
+                self._assemble_rps12(rec, features, consumed, nuc_dict, protein_dict)
+            except Exception as exc:
+                self._skip_feature(rec, "feature:cds", "rps12", exc)
+
+        pending: dict[str, list[GeneFeature]] = defaultdict(list)
+        for feature in features:
             try:
                 self._features_scanned = getattr(self, "_features_scanned", 0) + 1
+                if id(feature) in consumed:
+                    continue
                 if len(feature.location) < self.min_seq_length:
                     continue
                 feat_name = PlastidFeature.name_cleaner.get_safe_gene(feature)
                 if self._is_region_excluded(feat_name):
                     continue
+                # Fragments already claimed by the rps12 reconstructor.
+                if Rps12Reconstructor.is_candidate(feature, feat_name):
+                    if "rps12" not in exclude:
+                        continue
 
                 # Step 1. Extract nucleotide sequence of each gene and filter against min_seq_length
                 gene = GeneFeature(rec, feature)
@@ -851,18 +877,74 @@ class ExtractAndCollect:
                         self._note_rejected(rec, "feature:cds", feature, gene)
                     continue
 
-                # Step 2. Translate nucleotide sequence to protein
-                if protein_dict is not None:
-                    protein = ProteinFeature(gene=gene)
-                    if protein.seq_obj is None:
-                        self._note_rejected(rec, "feature:cds", feature, protein)
-                        continue
-                    protein_dict.add_feature(protein)
-
-                nuc_dict.add_feature(gene)
+                pending[str(gene.feat_name)].append(gene)
             except Exception as exc:
                 self._skip_feature(rec, "feature:cds", feature, exc)
+
+        ir_mode = getattr(self, "ir_mode", "single") or "single"
+        for _locus, copies in pending.items():
+            kept, events = classify_ir_copies(copies, ir_mode)
+            for event in events:
+                self._append_quarantine_record(QuarantineRecord(**event))
+            for gene in kept:
+                try:
+                    if protein_dict is not None:
+                        protein = ProteinFeature(gene=gene)
+                        if protein.seq_obj is None:
+                            self._note_rejected(
+                                rec, "feature:cds", gene.feature, protein
+                            )
+                            continue
+                        protein_dict.add_feature(protein)
+                    nuc_dict.add_feature(gene)
+                except Exception as exc:
+                    self._skip_feature(rec, "feature:cds", gene.feature, exc)
+
         self._drain_problems(rec, record_features, "feature:cds")
+
+    def _append_quarantine_record(self, record: QuarantineRecord) -> None:
+        bucket = getattr(self, "_quarantine", None)
+        if bucket is None:
+            return
+        bucket.append(record)
+
+    def _assemble_rps12(
+        self,
+        rec: SeqRecord,
+        features: list[SeqFeature],
+        consumed: set[int],
+        nuc_dict: PlastidDict,
+        protein_dict: PlastidDict | None,
+    ) -> None:
+        """Run :class:`Rps12Reconstructor` and insert a unified ``rps12`` if possible."""
+        result = Rps12Reconstructor.reconstruct(rec, features)
+        for feature in result.consumed_features:
+            consumed.add(id(feature))
+        if result.reason_code:
+            self._append_quarantine_record(
+                QuarantineRecord(
+                    taxon_id=str(getattr(rec, "name", "") or ""),
+                    locus_id="rps12",
+                    reason_code=str(result.reason_code),
+                    raw_coords=str(result.raw_coords or ""),
+                    observed_len=int(result.observed_len or 0),
+                    locus_median_len=None,
+                    upper_fence=None,
+                    action_taken=ACTION_REJECTED_AT_EXTRACT,
+                )
+            )
+        if not result.success or result.gene is None:
+            return
+        gene = result.gene
+        if gene.seq_obj is None or len(gene.seq_obj) < self.min_seq_length:
+            return
+        if protein_dict is not None:
+            protein = ProteinFeature(gene=gene)
+            if protein.seq_obj is None:
+                self._note_rejected(rec, "feature:cds", gene.feature, protein)
+                return
+            protein_dict.add_feature(protein)
+        nuc_dict.add_feature(gene)
 
     def _extract_rna(self, rec: SeqRecord, nuc_dict: PlastidDict):
         """
@@ -1609,6 +1691,8 @@ class DataCleaning:
 
         # Tier-2: surgical per-taxon length outliers (after whole-locus filters).
         self.apply_tukey_length_qc()
+        # Post-Tukey CDS strand polarity (antisense plastome quarantine).
+        self.apply_strand_polarity_audit()
 
     def apply_tukey_length_qc(self) -> int:
         """Quarantine per-taxon length outliers; deactivate loci left with N < 2.
@@ -1673,4 +1757,39 @@ class DataCleaning:
                     "(MAFFT requires N >= 2)"
                 )
                 self.plastid_data.remove_nuc(region)
+        return deleted
+
+    def apply_strand_polarity_audit(self) -> int:
+        """Quarantine antisense-inverted taxa (CDS mode only); return deletions.
+
+        Skipped entirely for ``int`` / ``igs`` / ``rna``. Reads stored nucleotide
+        sequences from the feature store after Tukey QC.
+        """
+        mode = getattr(self.plastid_data, "mode", None)
+        mode_key = _mode_key(
+            getattr(mode, "mode", None)
+            or getattr(mode, "value", None)
+            or mode
+            or self.user_params.get("select_mode")
+            or ""
+        )
+        if mode_key != "cds":
+            return 0
+
+        store = self.plastid_data.store
+        ledger = getattr(self.plastid_data, "qc_ledger", None)
+        num_taxa = getattr(self.plastid_data, "num_taxa", None)
+        log.info("  applying strand polarity audit across stored CDS sequences")
+        deleted = StrandPolarityAuditor.audit(
+            store,
+            ledger,
+            remove_region=self.plastid_data.remove_nuc,
+            min_num_taxa=self.min_num_taxa,
+            num_taxa=num_taxa,
+        )
+        if deleted:
+            log.info(
+                f"    strand polarity audit quarantined {deleted} "
+                "taxon×locus sequence(s) (ERR_ANTISENSE_STRAND_INVERSION)"
+            )
         return deleted

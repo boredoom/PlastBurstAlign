@@ -119,6 +119,7 @@ _USER_PARAM_KEYS = frozenset(
         "fileext",
         "exclude_fullcds",
         "exclude_region",
+        "ir_mode",
         "min_seq_length",
         "min_num_taxa",
         "verbose",

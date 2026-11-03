@@ -448,6 +448,23 @@ class DiskBackedFeatureStore:
         for row in cursor.fetchall():
             yield (str(row["taxon_name"]), int(row["seq_len"]))
 
+    def iter_region_sequences(
+        self, region_name: str, seq_type: str = "nucl"
+    ) -> Iterator[tuple[str, str]]:
+        """Yield ``(taxon_name, sequence)`` for rows of one region."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT taxon_name, sequence
+            FROM sequence_records
+            WHERE region_name = :region AND seq_type = :type
+            ORDER BY file_index ASC, id ASC;
+            """,
+            {"region": region_name, "type": seq_type},
+        )
+        for row in cursor.fetchall():
+            yield (str(row["taxon_name"]), str(row["sequence"]))
+
     def _get_read_conn(self) -> sqlite3.Connection:
         """Thread-safe connection accessor for parallel reads under WAL mode."""
         if self.db_path == ":memory:":

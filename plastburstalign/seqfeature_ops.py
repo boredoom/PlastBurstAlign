@@ -15,6 +15,7 @@ from .logging_ops import logger as log
 from .qc import (
     ERR_COORDINATE_OVERRUN,
     ERR_TOPOLOGY_INVERSION,
+    CdsCodingValidator,
     QuarantineLedger,
     circular_intron_bounds,
     feature_span_ok,
@@ -533,18 +534,21 @@ class GeneFeature(PlastidFeature):
         self._trim_mult_three()
 
     def _trim_mult_three(self):
-        """
-        Accesses if a proper reading frame exists for the gene.
+        """Validate CDS frame / stops via :class:`CdsCodingValidator`.
+
+        CDS-path only (``GeneFeature``). Non-triplet and premature-stop failures
+        are Tier-1 quarantined; ATG trailing-codon trim is preserved; pseudogenes
+        are excluded with ``INFO_PSEUDOGENE_EXCLUDED``.
         """
         if self.seq_obj is None:  # extraction failed; the exception is recorded
             return
-        trim_char = len(self.seq_obj) % 3
-        if trim_char > 0 and self.seq_obj[:3] == "ATG":
-            self.seq_obj = self.seq_obj[:-trim_char]
-        elif trim_char > 0:
-            self.seq_obj = None
-            self._set_exception()
-            self._log_fun = GeneFeature._log_fun
+        seq, reason = CdsCodingValidator.validate(self.seq_obj, self.feature)
+        if reason is not None:
+            loc = self._location_for_span()
+            observed = len(self.seq_obj) if self.seq_obj is not None else 0
+            self._reject_qc(reason, location_raw_coords(loc), observed)
+            return
+        self.seq_obj = seq
 
 
 class ProteinFeature(GeneFeature):
