@@ -76,3 +76,47 @@ def test_table11_isoleucine_and_rna_edited_starts():
         seq = start + ("GAA" * 18) + "TAA"
         valid, err = validate_cds_invariants(seq)
         assert valid is True, f"Failed on valid start codon {start}: {err}"
+
+def test_gene_name_cleaner_product_fallback():
+    """Verify that features lacking /gene fall back cleanly to /product."""
+    from Bio.SeqFeature import SeqFeature, FeatureLocation
+    from plastburstalign.seqfeature_ops import GeneNameCleaner
+
+    # Test 1: Feature with explicit gene qualifier
+    feat_gene = SeqFeature(FeatureLocation(0, 100), type="CDS", qualifiers={"gene": ["rbcL"]})
+    assert GeneNameCleaner.get_gene(feat_gene) == "rbcL"
+
+    # Test 2: Feature with only /product (e.g., NC_012927 style)
+    feat_prod = SeqFeature(
+        FeatureLocation(0, 100),
+        type="CDS",
+        qualifiers={"product": ["ribosomal protein S12"]}
+    )
+    assert GeneNameCleaner.get_gene(feat_prod) == "rps12"
+
+    # Test 3: Complex /product mappings
+    mappings = [
+        ("photosystem II protein D1", "psbA"),
+        ("maturase K", "matK"),
+        ("RNA polymerase beta'' subunit", "rpoC2"),
+        ("ATP-dependent Clp protease proteolytic subunit", "clpP"),
+        ("ATP synthase CF1 alpha subunit", "atpA"),
+        ("cytochrome b6", "petB"),
+        ("Psal", "psaI"),
+    ]
+    for prod_str, expected_gene in mappings:
+        f = SeqFeature(FeatureLocation(0, 100), type="CDS", qualifiers={"product": [prod_str]})
+        assert GeneNameCleaner.get_gene(f) == expected_gene, f"Failed on product: {prod_str}"
+
+
+def test_watchdog_timeout_high_scale_floor():
+    """Verify that huge-N/work alignments receive a resilient minimum watchdog deadline."""
+    from plastburstalign.qc import alignment_timeout_seconds
+
+    # For tiny work on 100 taxa
+    small_t = alignment_timeout_seconds(work=1e5, tier=0, alphabet="prot", leased_threads=1)
+    assert small_t >= 60.0
+
+    # For ultra-large work (e.g. 13.5k taxa)
+    large_t = alignment_timeout_seconds(work=6.96e9, tier=3, alphabet="prot", leased_threads=1)
+    assert large_t >= 600.0, f"Expected timeout >= 600s, got {large_t}s"

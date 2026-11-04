@@ -711,8 +711,11 @@ def alignment_timeout_seconds(
     parallel = serial + (1.0 - serial) / float(capped)
     t_pred = t1 * parallel + float(tm.fixed_overhead_s)
 
+    # For large datasets (work or high N), guarantee a resilient floor
+    effective_min = max(min_seconds, 600.0 if work > 5e9 else min_seconds)
+
     # Clamp strictly between min_seconds and max_seconds to prevent 32-bit epoll overflow
-    return float(min(max_seconds, max(min_seconds, slack * t_pred)))
+    return float(min(max_seconds, max(effective_min, slack * t_pred)))
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+import re
 import os
 from collections import OrderedDict, defaultdict
 from re import compile as re_compile
@@ -257,18 +258,163 @@ class GeneNameCleaner:
             return None
 
     @staticmethod
+    def _parse_product_to_gene(product: str) -> Optional[str]:
+        """Map canonical GenBank /product annotations to standardized plastid gene names."""
+        if not product:
+            return None
+        s = product.strip()
+        if s.lower().startswith("product:"):
+            s = s[8:].strip()
+
+        # Handle direct typo Psal for psaI
+        if s.lower() == "psal":
+            return "psaI"
+
+        # Direct short symbols (e.g., PsbA, rbcL, Ycf1, lhbA, ClpP, MatK)
+        m_sym = re.match(r"^([a-zA-Z]{3,4}\d{0,2}[a-zA-Z]?)$", s)
+        if m_sym:
+            sym = m_sym.group(1)
+            return sym[0].lower() + sym[1:]
+
+        # Ribosomal proteins: "ribosomal protein S12" -> "rps12"
+        m_rp = re.match(r"(?i)ribosomal protein ([sl])(\d+)", s)
+        if m_rp:
+            return f"rp{m_rp.group(1).lower()}{m_rp.group(2)}"
+
+        # Photosystem II
+        if re.search(r"(?i)photosystem ii (?:reaction center )?protein d1\b", s):
+            return "psbA"
+        if re.search(r"(?i)photosystem ii (?:reaction center )?protein d2\b", s):
+            return "psbD"
+        if re.search(r"(?i)photosystem ii (?:44\s*kda|cp43)", s):
+            return "psbC"
+        if re.search(r"(?i)photosystem ii 47\s*kda", s):
+            return "psbB"
+        if re.search(r"(?i)photosystem ii (?:43\s*kda|protein v\b)", s):
+            return "psbC"
+        if re.search(r"(?i)photosystem ii (?:phosphoprotein|protein h\b|subunit h\b)", s) or re.search(r"(?i)photosystem phosphoprotein", s):
+            return "psbH"
+        if re.search(r"(?i)photosystem ii cytochrome b559 alpha", s):
+            return "psbE"
+        if re.search(r"(?i)photosystem ii cytochrome b559 beta", s):
+            return "psbF"
+        m_psb = re.search(r"(?i)photosystem ii (?:protein|subunit) ([a-z0-9]+)", s)
+        if m_psb:
+            return f"psb{m_psb.group(1).upper()}"
+
+        # Photosystem I
+        if re.search(r"(?i)photosystem i p700 (?:chlorophyll a )?apoprotein a1", s):
+            return "psaA"
+        if re.search(r"(?i)photosystem i p700 (?:chlorophyll a )?apoprotein a2", s):
+            return "psaB"
+        if re.search(r"(?i)photosystem i subunit ix", s):
+            return "psaI"
+        if re.search(r"(?i)photosystem i subunit viii", s):
+            return "psaD"
+        if re.search(r"(?i)photosystem i subunit vii", s):
+            return "psaC"
+        m_ycf_psi = re.search(r"(?i)photosystem i assembly protein (ycf\d+)", s)
+        if m_ycf_psi:
+            return m_ycf_psi.group(1).lower()
+        m_psa = re.search(r"(?i)photosystem i (?:protein|subunit) ([a-z0-9]+)", s)
+        if m_psa:
+            return f"psa{m_psa.group(1).upper()}"
+
+        # Rubisco large subunit
+        if re.search(r"(?i)ribulose.*large subunit", s) or re.search(r"(?i)ribulose-1,5-bisphosphate carboxylase/oxygenase$", s):
+            return "rbcL"
+
+        # Maturase K
+        if re.search(r"(?i)maturase k", s):
+            return "matK"
+
+        # ATP synthase
+        if re.search(r"(?i)atp (?:synthase|systhase).*cf1 alpha", s) or re.search(r"(?i)cf1 subunit alpha", s):
+            return "atpA"
+        if re.search(r"(?i)atp (?:synthase|systhase).*cf1 beta", s) or re.search(r"(?i)cf1 subunit beta", s):
+            return "atpB"
+        if re.search(r"(?i)atp (?:synthase|systhase).*cf1 epsilon", s) or re.search(r"(?i)cf1 subunit epsilon", s):
+            return "atpE"
+        if re.search(r"(?i)atp (?:synthase|systhase).*(?:cf0|cfo) b", s) or re.search(r"(?i)cf0 subunit ii\b", s):
+            return "atpF"
+        if re.search(r"(?i)atp (?:synthase|systhase).*(?:cf0|cfo) c", s) or re.search(r"(?i)cf0 subunit iii", s):
+            return "atpH"
+        if re.search(r"(?i)atp (?:synthase|systhase).*(?:cf0|cfo) (?:a|subunit i\b|subunit iv\b)", s) or re.search(r"(?i)cf0 subunit iv", s):
+            return "atpI"
+
+        # Cytochromes
+        if re.search(r"(?i)cytochrome f\b", s):
+            return "petA"
+        if re.search(r"(?i)cytochrome b6\b", s):
+            return "petB"
+        if re.search(r"(?i)cytochrome b6/f complex subunit iv", s):
+            return "petD"
+        if re.search(r"(?i)cytochrome b6/f complex subunit v\b", s) or re.search(r"(?i)cytochrome b6/f subunit g", s):
+            return "petG"
+        if re.search(r"(?i)cytochrome b6/f complex subunit vi\b", s) or re.search(r"(?i)cytochrome b6/f subunit l", s):
+            return "petL"
+        if re.search(r"(?i)cytochrome b6/f complex subunit viii\b", s) or re.search(r"(?i)cytochrome b6/f subunit n", s):
+            return "petN"
+        if re.search(r"(?i)cytochrome b559 subunit alpha", s):
+            return "psbE"
+        if re.search(r"(?i)cytochrome b559 subunit beta", s):
+            return "psbF"
+
+        # NADH dehydrogenase / NDH
+        m_ndh = re.search(r"(?i)(?:nadh dehydrogenase|nad\(p\)h-quinone oxidoreductase) subunit ([a-z0-9]+)", s)
+        if m_ndh:
+            sub = m_ndh.group(1).upper()
+            mapping = {
+                "1": "ndhA", "2": "ndhB", "3": "ndhC", "4": "ndhD", "4L": "ndhE",
+                "5": "ndhF", "6": "ndhJ", "7": "ndhH",
+                "A": "ndhA", "B": "ndhB", "C": "ndhC", "D": "ndhD", "E": "ndhE",
+                "F": "ndhF", "G": "ndhG", "H": "ndhH", "I": "ndhI", "J": "ndhJ", "K": "ndhK"
+            }
+            return mapping.get(sub, f"ndh{sub}")
+
+        # RNA polymerase: check beta'' (rpoC2) before beta' (rpoC1) before beta (rpoB)
+        if re.search(r"(?i)rna polymerase (?:subunit )?alpha", s):
+            return "rpoA"
+        if re.search(r"(?i)rna polymerase.*beta[''’’]{2}", s) or re.search(r"(?i)rna polymerase.*beta''", s):
+            return "rpoC2"
+        if re.search(r"(?i)rna polymerase.*beta['’]", s) or re.search(r"(?i)rna polymerase.*beta'", s):
+            return "rpoC1"
+        if re.search(r"(?i)rna polymerase (?:subunit )?beta(?![a-zA-Z'’])", s):
+            return "rpoB"
+
+        # accD, clpP, ccsA, cemA, infA
+        if re.search(r"(?i)acetyl-coa carboxylase", s):
+            return "accD"
+        if re.search(r"(?i)clp protease", s) or re.search(r"(?i)atp-dependent.*protease", s):
+            return "clpP"
+        if re.search(r"(?i)c-type cytochrome synthesis", s) or re.search(r"(?i)cytochrome c biogenesis", s):
+            return "ccsA"
+        if re.search(r"(?i)envelope membrane (?:carbon uptake )?protein", s):
+            return "cemA"
+        if re.search(r"(?i)initiation factor", s):
+            return "infA"
+        m_ycf = re.search(r"(?i)ycf(\d+)", s)
+        if m_ycf:
+            return f"ycf{m_ycf.group(1)}"
+
+        return None
+
+    @staticmethod
     def get_gene(feat: SeqFeature) -> Optional[str]:
         """
-        Finds and returns the gene name for a feature. If the feature is not a gene, `None` will be returned.
-
-        Args:
-            feat: `Biopython` feature.
-
-        Returns:
-            The gene name.
-
+        Finds and returns the gene name for a feature.
+        Falls back to `/product` mapping if `/gene` is absent.
         """
-        return feat.qualifiers["gene"][0] if feat.qualifiers.get("gene") else None
+        if feat.qualifiers.get("gene"):
+            val = feat.qualifiers["gene"][0].strip()
+            if val:
+                return val
+        if feat.qualifiers.get("product"):
+            val = feat.qualifiers["product"][0].strip()
+            mapped = GeneNameCleaner._parse_product_to_gene(val)
+            if mapped:
+                return mapped
+        return None
 
     def clean_trna_gene(
         self, gene: Optional[str], cut_trna: bool = False
