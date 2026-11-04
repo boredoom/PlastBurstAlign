@@ -120,3 +120,28 @@ def test_watchdog_timeout_high_scale_floor():
     # For ultra-large work (e.g. 13.5k taxa)
     large_t = alignment_timeout_seconds(work=6.96e9, tier=3, alphabet="prot", leased_threads=1)
     assert large_t >= 600.0, f"Expected timeout >= 600s, got {large_t}s"
+
+def test_ndhd_5prime_drift_harmonization():
+    """Verify that ndhD with 26-codon upstream drift is trimmed to canonical ACG."""
+    from plastburstalign.seqfeature_ops import harmonize_5prime_drift
+    
+    # 78 bp (26 codons) of arbitrary in-frame drift + canonical ACG + 60 bp in-frame CDS + TAA
+    drift_26_codons = "TAC" + ("GAA" * 25)
+    canonical_cds = "ACG" + ("GAA" * 20) + "TAA"
+    full_seq = drift_26_codons + canonical_cds
+    
+    harmonized = harmonize_5prime_drift(full_seq, locus="ndhD")
+    assert harmonized == canonical_cds
+    assert harmonized[:3] == "ACG"
+    assert len(harmonized) % 3 == 0
+
+
+def test_accd_evolutionary_expansion_invariants():
+    """Verify that a 3.5 kb in-frame accD expansion with zero stops passes validation."""
+    from plastburstalign.qc import validate_cds_invariants
+    
+    # Synthetic 3558 bp in-frame CDS (like Geranium incanum accD)
+    accD_expanded = "ATG" + ("GAA" * 1184) + "TAA"
+    valid, err = validate_cds_invariants(accD_expanded)
+    assert valid is True
+    assert err is None

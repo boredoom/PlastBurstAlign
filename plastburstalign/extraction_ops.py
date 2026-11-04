@@ -1719,9 +1719,18 @@ class DataCleaning:
                 lengths, min_n=10, k=3.0, small_n_envelope=envelope
             )
 
-            # Gross structural bound (prevents multi-kilobase fusions)
-            # Allow clade extensions while preventing operon fusions
-            structural_bound = max(fence * 2.0, median * 2.0, median + 300)
+            # Gross structural bound: adaptive biological envelope
+            REPEAT_EXPANSION_LOCI = frozenset({"accd", "rps18", "rpoa", "ycf1", "ycf2", "clpp"})
+            reg_clean = str(region).strip().lower()
+            if any(rep in reg_clean for rep in REPEAT_EXPANSION_LOCI):
+                # Documented lineage repeat expansions (e.g. accD in Fabaceae/Geraniaceae)
+                structural_bound = max(fence * 2.0, median * 3.5, 4500.0)
+            elif median < 150.0:
+                # Small peptides: Cap firmly at 350 bp to block 1.5 kb polycistronic operon overruns
+                structural_bound = max(fence, 350.0)
+            else:
+                # Standard globular enzymes
+                structural_bound = max(fence * 2.0, median * 2.2, median + 300.0)
 
             outliers = []
             mode_str = str(mode_key).strip().lower()

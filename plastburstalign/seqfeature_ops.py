@@ -270,6 +270,13 @@ class GeneNameCleaner:
         if s.lower() == "psal":
             return "psaI"
 
+        # Historical Reading Frame aliases (RF1 -> ycf1, RF21 -> ycf2, RF34 -> ycf3)
+        m_rf = re.search(r"(?i)(?:putative|hypothetical)?\s*chloroplast\s*rf(\d+)\b", s)
+        if m_rf:
+            rf_map = {"1": "ycf1", "21": "ycf2", "34": "ycf3"}
+            if m_rf.group(1) in rf_map:
+                return rf_map[m_rf.group(1)]
+
         # Direct short symbols (e.g., PsbA, rbcL, Ycf1, lhbA, ClpP, MatK)
         m_sym = re.match(r"^([a-zA-Z]{3,4}\d{0,2}[a-zA-Z]?)$", s)
         if m_sym:
@@ -837,3 +844,27 @@ class IntergenicFeature(PlastidFeature):
         self.inv_feat_name = f"{self.subsequent_name}_{self.feat_name}"
         self.feat_name += "_" + self.subsequent_name
         super()._set_seq_name()
+
+VALID_PLASTID_STARTS = frozenset({"ATG", "GTG", "TTG", "CTG", "ATT", "ATC", "ATA", "ACG"})
+
+def harmonize_5prime_drift(seq: str, locus: str, max_drift_codons: int = 40) -> str:
+    """Trim upstream 5' annotation drift back to canonical plastid start codon."""
+    if not seq or len(seq) < 9:
+        return seq
+
+    start = seq[:3].upper()
+    if start in VALID_PLASTID_STARTS:
+        return seq
+
+    # Scan in-frame up to max_drift_codons
+    limit = min(len(seq) - 3, max_drift_codons * 3)
+    for offset in range(3, limit, 3):
+        candidate = seq[offset:offset + 3].upper()
+        if candidate in VALID_PLASTID_STARTS:
+            subseq = seq[offset:]
+            # Ensure remainder has no internal stops under Table 11
+            from Bio.Seq import Seq
+            prot = str(Seq(subseq).translate(table=11))
+            if prot[:-1].count("*") == 0:
+                return subseq
+    return seq

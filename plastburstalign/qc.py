@@ -460,6 +460,32 @@ class CdsCodingValidator:
 
         return (seq, None)
 
+def harmonize_5prime_drift(seq: str, locus: str = "", max_drift_codons: int = 40) -> str:
+    """Trim upstream 5' annotation drift back to canonical plastid start codon.
+
+    Scans downstream in-frame up to max_drift_codons for canonical initiation
+    (e.g., RNA-edited ACG or ATG) when sequence has an uncanonical start.
+    """
+    if not seq or len(seq) < 45 or len(seq) % 3 != 0:
+        return seq
+
+    start = seq[:3].upper()
+    if start in CANONICAL_PLASTID_STARTS:
+        return seq
+
+    limit = min(len(seq) - 3, max_drift_codons * 3)
+    from Bio.Seq import Seq
+
+    for offset in range(3, limit, 3):
+        candidate = seq[offset:offset + 3].upper()
+        if candidate in CANONICAL_PLASTID_STARTS:
+            subseq = seq[offset:]
+            prot = str(Seq(subseq).translate(table=11))
+            if prot[:-1].count("*") == 0:
+                return subseq
+    return seq
+
+
 CANONICAL_PLASTID_STARTS = frozenset({
     "ATG", "GTG", "TTG", "CTG",  # Canonical Table 11
     "ATT", "ATC", "ATA",         # Isoleucine initiation
@@ -480,7 +506,13 @@ def validate_cds_invariants(seq_dna: str) -> tuple[bool, str | None]:
 
     start_codon = seq_dna[:3].upper()
     if start_codon not in CANONICAL_PLASTID_STARTS:
-        return False, "ERR_NON_CANONICAL_START_CODON"
+        # Attempt 5' drift harmonization (e.g. ndhD upstream drift to canonical ACG)
+        harmonized = harmonize_5prime_drift(seq_dna)
+        if harmonized[:3].upper() in CANONICAL_PLASTID_STARTS:
+            seq_dna = harmonized
+            start_codon = seq_dna[:3].upper()
+        else:
+            return False, "ERR_NON_CANONICAL_START_CODON" 
 
     # Translate using NCBI Plastid Genetic Code 11
     from Bio.Seq import Seq
