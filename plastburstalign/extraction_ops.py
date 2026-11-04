@@ -24,6 +24,7 @@ from .qc import (
     bio_envelope_for_mode,
     tukey_upper_fence,
     validate_cds_invariants,
+    circular_intron_bounds,
 )
 
 # Package imports
@@ -1719,15 +1720,16 @@ class DataCleaning:
             )
 
             # Gross structural bound (prevents multi-kilobase fusions)
-            structural_bound = max(fence, median * 1.5)
+            structural_bound = max(fence * 2.0, median * 2.0)
 
             outliers = []
+            mode_str = str(mode_key).strip().lower()
             for taxon, length in pairs:
                 if float(length) <= float(fence):
                     continue
 
                 # Candidate outlier: test biological invariants
-                if mode == "cds":
+                if mode_str == "cds":
                     seq_record = store.get_sequence(region, taxon, "nucl")
                     if seq_record:
                         is_valid_orf, _ = validate_cds_invariants(seq_record)

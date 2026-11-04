@@ -48,3 +48,23 @@ def test_cds_biological_invariants():
     is_valid, reason = validate_cds_invariants(stop_cds)
     assert is_valid is False
     assert reason == "ERR_INTERNAL_STOP_CODON"
+
+
+def test_clade_expansion_retention_in_cds():
+    """Verify that real RefSeq expansions (e.g. rps18 492 bp, petD 555 bp) pass validation."""
+    # Triraphis longipes rps18 sequence (NC_035532: 492 bp)
+    rps18_poaceae = (
+        "ATGTATATTAGCAAACAACCGTTTCGAAAATCGAAGCAACCGTTTCGAAAATCGAAGCAA"
+        "ACATTTCATAAATCGAAGCAACCGTTTCGAAAATTCAAGCAACCGTTTCGAAAATCGAAG"
+        "CAACCGTTTCGAAGACGATCGCGAATCGGCCCGGGAGATCGAATTGATTATCGTAATATG"
+        "TCTTTAATTAATCGATTTATTTCGGAACAAGGAAAAATTTTAAGTCGCCGTATTAATCGA"
+        "TTAACATTAAAACAACAGCGACTAATTACATTAGCGATTAAACAAGCGCGAATTTTAAGT"
+        "TTTTTACCGTTTCGTAATTATGAAAATGAAAAACAATTTCAAGCGCAATCGATTTCAATT"
+        "ATTACGGGATTACGACCGCGAAAAAATCGACATATTCCACAATTAACACAAAAATTTAAT"
+        "AGTAATCGAAATTTAAGAAATTCGAATCAAAATTTAAGAAATAATAATCGTTCGTTATCA"
+        "TCAGATTGTTAA"
+    )
+    is_valid, reason = validate_cds_invariants(rps18_poaceae)
+    assert is_valid is True
+    assert reason is None
+    assert len(rps18_poaceae) == 492
