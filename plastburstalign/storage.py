@@ -431,6 +431,23 @@ class DiskBackedFeatureStore:
             self._conn.commit()
         return deleted
 
+    def get_sequence(
+        self, region_name: str, taxon_name: str, seq_type: str = "nucl"
+    ) -> str | None:
+        """Return the sequence string for one (region, taxon, seq_type) or None."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT sequence
+            FROM sequence_records
+            WHERE region_name = :region AND taxon_name = :taxon AND seq_type = :type
+            LIMIT 1;
+            """,
+            {"region": region_name, "taxon": taxon_name, "type": seq_type},
+        )
+        row = cursor.fetchone()
+        return str(row["sequence"]) if row and row["sequence"] is not None else None
+
     def iter_region_lengths(
         self, region_name: str, seq_type: str = "nucl"
     ) -> Iterator[tuple[str, int]]:

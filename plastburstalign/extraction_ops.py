@@ -23,6 +23,7 @@ from .qc import (
     StrandPolarityAuditor,
     bio_envelope_for_mode,
     tukey_upper_fence,
+    validate_cds_invariants,
 )
 
 # Package imports
@@ -1043,18 +1044,12 @@ class ExtractAndCollect:
             self._features_scanned = getattr(self, "_features_scanned", 0) + 1
             exon_1 = feature_obj.location.parts[offset]
             exon_2 = feature_obj.location.parts[offset + 1]
-            # Approximate length for the early min_seq_length gate. Circular
-            # short-arc length is finalized inside IntronFeature.
-            if exon_2.start >= exon_1.end:
-                intron_len = abs(int(exon_2.start) - int(exon_1.end))
-            else:
-                parent_len = len(rec.seq) if rec.seq is not None else 0
-                topo = (rec.annotations or {}).get("topology")
-                if str(topo).lower() == "circular" and parent_len > 0:
-                    intron_len = (parent_len - int(exon_1.end)) + int(exon_2.start)
-                else:
-                    intron_len = abs(int(exon_1.end) - int(exon_2.start))
-            if intron_len < self.min_seq_length:
+
+            parent_len = len(rec.seq) if rec.seq is not None else 0
+            topo = (rec.annotations or {}).get("topology")
+            loc = circular_intron_bounds(exon_1, exon_2, parent_len, topo)
+
+            if loc is None or len(loc) < self.min_seq_length:
                 return
 
             gene_name = PlastidFeature.name_cleaner.get_safe_gene(feature_obj)
@@ -1065,7 +1060,6 @@ class ExtractAndCollect:
             intron = IntronFeature(rec, feature_obj, offset)
             if intron.seq_obj is None:
                 self._note_rejected(rec, "feature:int", feature_obj, intron)
-                # Quarantined / rejected introns are not added to the dict.
                 if not getattr(intron, "_qc_reason", None):
                     nuc_dict.add_feature(intron)
                 return
@@ -1073,6 +1067,7 @@ class ExtractAndCollect:
                 intron.feat_name
             ):
                 return
+
             nuc_dict.add_feature(intron)
 
         record_features = RecordFeatures(rec, self.exclude_cds)
@@ -1719,14 +1714,29 @@ class DataCleaning:
             if not pairs:
                 continue
             lengths = [length for _taxon, length in pairs]
-            median, _iqr, fence = tukey_upper_fence(
+            median, iqr, fence = tukey_upper_fence(
                 lengths, min_n=10, k=3.0, small_n_envelope=envelope
             )
-            outliers = [
-                (taxon, length)
-                for taxon, length in pairs
-                if float(length) > float(fence)
-            ]
+
+            # Gross structural bound (prevents multi-kilobase fusions)
+            structural_bound = max(fence, median * 1.5)
+
+            outliers = []
+            for taxon, length in pairs:
+                if float(length) <= float(fence):
+                    continue
+
+                # Candidate outlier: test biological invariants
+                if mode == "cds":
+                    seq_record = store.get_sequence(region, taxon, "nucl")
+                    if seq_record:
+                        is_valid_orf, _ = validate_cds_invariants(seq_record)
+                        # Retain valid in-frame clade expansions below gross structural cap
+                        if is_valid_orf and float(length) <= structural_bound:
+                            continue
+
+                outliers.append((taxon, length))
+
             for taxon, length in outliers:
                 store.delete_sequence(region, taxon, "nucl")
                 store.delete_sequence(region, taxon, "prot")

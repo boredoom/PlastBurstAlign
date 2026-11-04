@@ -300,19 +300,16 @@ def circular_intron_bounds(
     parent_len: int,
     topology: str | None,
 ) -> FeatureLocation | CompoundLocation | None:
-    """Build the short-arc intron location between two exon parts.
+    """Build the minimal-arc intron location between two exon parts.
 
-    When exons are in genomic order, returns a simple
-    ``FeatureLocation(exon1.end, exon2.start)``. When they wrap the origin and
-    ``topology == "circular"``, returns a two-part :class:`CompoundLocation`
-    spanning the short arc. Otherwise returns ``None``
-    (``ERR_TOPOLOGY_INVERSION``).
+    Enforces the shortest-arc topological invariant on S^1 circular manifolds,
+    invariant to transcript strand polarity and Biopython part indexing order.
     """
     from Bio.SeqFeature import CompoundLocation, FeatureLocation
 
     try:
-        e1_end = int(exon1.end)
-        e2_start = int(exon2.start)
+        s1, e1 = int(exon1.start), int(exon1.end)
+        s2, e2 = int(exon2.start), int(exon2.end)
         strand = getattr(exon1, "strand", None)
         if strand is None:
             strand = getattr(exon2, "strand", None)
@@ -323,27 +320,38 @@ def circular_intron_bounds(
     if parent <= 0:
         return None
 
-    if e2_start >= e1_end:
-        if e2_start == e1_end:
-            return None
-        return FeatureLocation(e1_end, e2_start, strand=strand)
+    # Compute candidate linear arc vs wrap arc based on part order
+    if s2 >= e1:
+        linear_len = s2 - e1
+        linear_coords = (e1, s2)
+        wrap_len = (parent - e2) + s1
+        wrap_coords = ((e2, parent), (0, s1))
+    elif s1 >= e2:
+        linear_len = s1 - e2
+        linear_coords = (e2, s1)
+        wrap_len = (parent - e1) + s2
+        wrap_coords = ((e1, parent), (0, s2))
+    else:
+        # Overlapping exons cannot define an internal intron
+        return None
 
-    # Origin wrap: only legal on circular replicons. The linear alternative
-    # FeatureLocation(e2_start, e1_end) is the long-arc poison pill.
+    # Intron connects exons across the shortest arc on S^1
+    if linear_len <= wrap_len:
+        if linear_len <= 0:
+            return None
+        return FeatureLocation(linear_coords[0], linear_coords[1], strand=strand)
+
+    # Origin wrap: legally valid ONLY on circular replicons
     topo = (topology or "").strip().lower()
     if topo != "circular":
         return None
-    # Short arc: [e1_end .. parent) + [0 .. e2_start)
-    if e1_end > parent or e2_start < 0:
-        return None
-    if e1_end == parent and e2_start == 0:
-        return None
-    left = FeatureLocation(e1_end, parent, strand=strand)
-    right = FeatureLocation(0, e2_start, strand=strand)
-    wrap_len = int(len(left)) + int(len(right))
+
     if wrap_len <= 0:
         return None
-    return CompoundLocation([left, right])
+
+    part_a = FeatureLocation(wrap_coords[0][0], wrap_coords[0][1], strand=strand)
+    part_b = FeatureLocation(wrap_coords[1][0], wrap_coords[1][1], strand=strand)
+    return CompoundLocation([part_a, part_b])
 
 
 def record_topology(record: Any) -> str | None:
@@ -451,6 +459,35 @@ class CdsCodingValidator:
             return (None, ERR_INTERNAL_STOP_CODON)
 
         return (seq, None)
+
+CANONICAL_PLASTID_STARTS = frozenset({"ATG", "GTG", "TTG", "ATT", "CTG"})
+CANONICAL_STOPS = frozenset({"TAA", "TAG", "TGA"})
+
+def validate_cds_invariants(seq_dna: str) -> tuple[bool, str | None]:
+    """Validate CDS integrity against NCBI Genetic Code 11 invariants.
+
+    Returns (is_valid, reason_code).
+    """
+    if len(seq_dna) % 3 != 0:
+        return False, ERR_FRAMESHIFT_NON_TRIPLET
+
+    if len(seq_dna) < 45:  # Minimum functional peptide (< 15 aa)
+        return False, "ERR_CDS_SUB_MINIMAL_LENGTH"
+
+    start_codon = seq_dna[:3].upper()
+    if start_codon not in CANONICAL_PLASTID_STARTS:
+        return False, "ERR_NON_CANONICAL_START_CODON"
+
+    # Translate using NCBI Plastid Genetic Code 11
+    from Bio.Seq import Seq
+    prot = str(Seq(seq_dna).translate(table=11))
+
+    # Check for internal premature termination
+    internal_stops = prot[:-1].count("*")
+    if internal_stops > 0:
+        return False, ERR_INTERNAL_STOP_CODON
+
+    return True, None
 
 
 # ---------------------------------------------------------------------------
