@@ -460,7 +460,11 @@ class CdsCodingValidator:
 
         return (seq, None)
 
-CANONICAL_PLASTID_STARTS = frozenset({"ATG", "GTG", "TTG", "ATT", "CTG"})
+CANONICAL_PLASTID_STARTS = frozenset({
+    "ATG", "GTG", "TTG", "CTG",  # Canonical Table 11
+    "ATT", "ATC", "ATA",         # Isoleucine initiation
+    "ACG",                       # Plastid C-to-U RNA editing
+})
 CANONICAL_STOPS = frozenset({"TAA", "TAG", "TGA"})
 
 def validate_cds_invariants(seq_dna: str) -> tuple[bool, str | None]:

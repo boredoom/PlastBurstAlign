@@ -1720,7 +1720,8 @@ class DataCleaning:
             )
 
             # Gross structural bound (prevents multi-kilobase fusions)
-            structural_bound = max(fence * 2.0, median * 2.0)
+            # Allow clade extensions while preventing operon fusions
+            structural_bound = max(fence * 2.0, median * 2.0, median + 300)
 
             outliers = []
             mode_str = str(mode_key).strip().lower()

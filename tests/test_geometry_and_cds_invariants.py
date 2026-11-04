@@ -68,3 +68,11 @@ def test_clade_expansion_retention_in_cds():
     assert is_valid is True
     assert reason is None
     assert len(rps18_poaceae) == 492
+
+def test_table11_isoleucine_and_rna_edited_starts():
+    """Verify Table 11 alternate starts (ATA, ATC, ATT) and RNA-edited ACG pass."""
+    for start in ["ATG", "GTG", "TTG", "CTG", "ATT", "ATC", "ATA", "ACG"]:
+        # 60 bp in-frame coding sequence (> 45 bp minimal threshold)
+        seq = start + ("GAA" * 18) + "TAA"
+        valid, err = validate_cds_invariants(seq)
+        assert valid is True, f"Failed on valid start codon {start}: {err}"
