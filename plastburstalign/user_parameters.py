@@ -788,6 +788,18 @@ class UserParametersScript(UserParameters):
             help="Also write a relaxed PHYLIP concatenated alignment (default: false)",
         )
         parser.add_argument(
+            "--output-formats",
+            dest="output_formats",
+            nargs="+",
+            type=str.lower,
+            choices=["fasta", "nexus", "phylip", "raxml"],
+            default=["fasta", "raxml"],
+            help=(
+                "Supermatrix formats to write to disk. "
+                "Choices: fasta, nexus, phylip, raxml (default: fasta raxml)."
+            ),
+        )
+        parser.add_argument(
             "--doctor",
             action="store_true",
             default=False,

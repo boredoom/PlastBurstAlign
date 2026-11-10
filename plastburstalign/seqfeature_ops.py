@@ -32,6 +32,55 @@ _INVALID_RESIDUES = re_compile(r"[^ACGTURYSWKMBDHVNacgturyswkmbdhvn]")
 # Region names become file names; real gene names are far shorter.
 MAX_REGION_NAME_CHARS = 100
 
+# ==============================================================================
+# UPSTREAM PLASTID GENE CURATION DICTIONARIES
+# ==============================================================================
+
+# Foreign Contaminants: Assembly leaks and transgenic selection markers
+CONTAMINANT_BLOCKLIST = frozenset({
+    # Plant/Animal Mitochondrial Genes
+    "cox1", "cox2", "cox3", "cob", "atp6", "atp9",
+    "nad1", "nad2", "nad3", "nad4", "nad4l", "nad5", "nad6", "nad7", "nad9",
+    # Transgenic Selection Vectors
+    "aada", "dfr", "bla", "neo", "hpt", "nptii", "gfp", "uida", "bar", "pat"
+})
+
+# Author Spelling Variants & Aliases -> Canonical CDS
+CANONICAL_CDS_ALIASES = {
+    # rbcL Aliases & Typos
+    "ribulose": "rbcL", "ribulosebisphosphatecarboxylase": "rbcL",
+    "ribulose15bisphosphatecarboxylaselargesubunit": "rbcL",
+    "rbcl2": "rbcL", "rbcl29": "rbcL",
+
+    # RNA Polymerase Operon
+    "rpobb": "rpoB", "rpoba": "rpoB", "rpo": "rpoB",
+    "rpoc1a": "rpoC1", "rpoc1b": "rpoC1",
+    "rpoc2a": "rpoC2", "rpoc2b": "rpoC2",
+
+    # Ribosomal Protein Typos & Punctuation
+    "rpl336": "rpl36", "rpi36": "rpl36", "rpl_36": "rpl36",
+    "rpl_32": "rpl32", "rpl_5": "rpl5",
+    "rp12": "rpl2", "rpi2": "rpl2",
+    "ros12": "rps12", "rsp12": "rps12",
+    "rps_14": "rps14", "rs14": "rps14",
+    "rps_16": "rps16", "rps_19": "rps19",
+    "rps2a": "rps2", "rps2b": "rps2",
+    "rps15a": "rps15", "rps15b": "rps15",
+
+    # Photosystem & ATP Synthase Aliases
+    "maturase": "matK", "matuase": "matK", "mat_k": "matK", "mat": "matK",
+    "psba1": "psbA", "psba2": "psbA", "psba": "psbA",
+    "psbd1": "psbD",
+    "pbn": "psbN", "pbt": "psbT",
+    "psi": "psaI", "psj": "psaJ", "psaii": "psaB",
+    "atp_b": "atpB", "atp_e": "atpE", "atp_f": "atpF",
+    "ndhb1": "ndhB", "ndhb2": "ndhB",
+    "ndhndhb": "ndhB", "ndhndhh": "ndhH",
+
+    # Split Inverted Repeat Boundaries
+    "ycf1a": "ycf1", "ycf1b": "ycf1",
+    "ycf2c": "ycf2", "ycf2n": "ycf2",
+}
 
 class PlastidData:
     mode: SelectMode
@@ -409,19 +458,33 @@ class GeneNameCleaner:
     @staticmethod
     def get_gene(feat: SeqFeature) -> Optional[str]:
         """
-        Finds and returns the gene name for a feature.
-        Falls back to `/product` mapping if `/gene` is absent.
+        Finds, normalizes, and validates the gene name for a plastid feature.
+        Filters contaminants and maps aliases into canonical nomenclature.
         """
+        raw_val = None
         if feat.qualifiers.get("gene"):
-            val = feat.qualifiers["gene"][0].strip()
-            if val:
-                return val
-        if feat.qualifiers.get("product"):
-            val = feat.qualifiers["product"][0].strip()
-            mapped = GeneNameCleaner._parse_product_to_gene(val)
-            if mapped:
-                return mapped
-        return None
+            raw_val = feat.qualifiers["gene"][0].strip()
+        elif feat.qualifiers.get("product"):
+            prod_val = feat.qualifiers["product"][0].strip()
+            raw_val = GeneNameCleaner._parse_product_to_gene(prod_val)
+
+        if not raw_val:
+            return None
+
+        # Clean punctuation and leading/trailing underscores
+        clean_key = re.sub(r"[_\W]+", "", raw_val).lower()
+
+        # 1. Foreign Contaminant Shield (Reject mitochondrial leaks and vectors)
+        if clean_key in CONTAMINANT_BLOCKLIST:
+            return None
+
+        # 2. Canonical Alias Translation
+        if clean_key in CANONICAL_CDS_ALIASES:
+            return CANONICAL_CDS_ALIASES[clean_key]
+
+        # 3. Strip non-alphanumeric noise while retaining standard nomenclature
+        cleaned_name = re.sub(r"^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "", raw_val)
+        return cleaned_name if cleaned_name else None
 
     def clean_trna_gene(
         self, gene: Optional[str], cut_trna: bool = False

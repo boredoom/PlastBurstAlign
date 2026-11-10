@@ -486,8 +486,9 @@ class SlurmCommandLineEndToEndTests(unittest.TestCase):
     def test_cds_slurm_equals_monolithic(self) -> None:
         # Protein alignment + back-translation inside the workers.
         mono, slurm = self._run_both("cds")
-        self.assertEqual(self._assert_same_supermatrix(mono, slurm), 3)
-        for fasta in (slurm / "fasta").glob("*.aligned.fasta"):
+        # 3 nucleotide alignments + 3 durable protein checkpoint artifacts = 6
+        self.assertEqual(self._assert_same_supermatrix(mono, slurm), 6)
+        for fasta in (slurm / "fasta").glob("nucl_*.aligned.fasta"):
             rows = gate.read_fasta(fasta)
             self.assertEqual(len(rows), 5)
             self.assertTrue(all(len(s) % 3 == 0 for _, s in rows))

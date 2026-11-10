@@ -210,11 +210,16 @@ def tukey_upper_fence(
         return (med, 0.0, float(small_n_envelope))
     # statistics.quantiles(..., n=4) → [Q1, Q2, Q3]
     q1, _q2, q3 = statistics.quantiles(values, n=4, method="inclusive")
-    iqr = float(q3) - float(q1)
-    if iqr == 0.0:
-        fence = (k * med) if med > 0.0 else float(small_n_envelope)
-        return (med, 0.0, float(fence))
-    return (med, float(iqr), float(q3) + k * iqr)
+    raw_iqr = float(q3) - float(q1)
+
+    if raw_iqr == 0.0:
+        fence = float(k * med) if med > 0 else float(small_n_envelope)
+        return (med, 0.0, fence)
+
+    # SURGICAL INVARIANT: IQR cannot collapse below 20% of the median length when raw_iqr > 0.
+    effective_iqr = max(raw_iqr, 0.20 * med)
+    fence = float(q3) + (k * effective_iqr)
+    return (med, raw_iqr, fence)
 
 
 def bio_envelope_for_mode(mode: str | None) -> int:
@@ -493,37 +498,86 @@ CANONICAL_PLASTID_STARTS = frozenset({
 })
 CANONICAL_STOPS = frozenset({"TAA", "TAG", "TGA"})
 
-def validate_cds_invariants(seq_dna: str) -> tuple[bool, str | None]:
-    """Validate CDS integrity against NCBI Genetic Code 11 invariants.
-
-    Returns (is_valid, reason_code).
-    """
+def validate_cds_invariants(
+    seq_dna: str,
+    *,
+    strict_start: bool = True
+) -> tuple[bool, str | None]:
     if len(seq_dna) % 3 != 0:
         return False, ERR_FRAMESHIFT_NON_TRIPLET
-
-    if len(seq_dna) < 45:  # Minimum functional peptide (< 15 aa)
+    if len(seq_dna) < 45:
         return False, "ERR_CDS_SUB_MINIMAL_LENGTH"
 
-    start_codon = seq_dna[:3].upper()
-    if start_codon not in CANONICAL_PLASTID_STARTS:
-        # Attempt 5' drift harmonization (e.g. ndhD upstream drift to canonical ACG)
-        harmonized = harmonize_5prime_drift(seq_dna)
-        if harmonized[:3].upper() in CANONICAL_PLASTID_STARTS:
-            seq_dna = harmonized
-            start_codon = seq_dna[:3].upper()
-        else:
-            return False, "ERR_NON_CANONICAL_START_CODON" 
+    # Only enforce canonical starts during raw extraction, not population length QC
+    if strict_start:
+        start_codon = seq_dna[:3].upper()
+        if start_codon not in CANONICAL_PLASTID_STARTS:
+            harmonized = harmonize_5prime_drift(seq_dna)
+            if harmonized[:3].upper() in CANONICAL_PLASTID_STARTS:
+                seq_dna = harmonized
+            else:
+                return False, "ERR_NON_CANONICAL_START_CODON"
 
-    # Translate using NCBI Plastid Genetic Code 11
+    # Strict frame integrity check: Zero internal stop codons allowed
     from Bio.Seq import Seq
     prot = str(Seq(seq_dna).translate(table=11))
-
-    # Check for internal premature termination
-    internal_stops = prot[:-1].count("*")
-    if internal_stops > 0:
+    if prot[:-1].count("*") > 0:
         return False, ERR_INTERNAL_STOP_CODON
 
     return True, None
+
+def attempt_suborf_salvage(
+    query_dna: str,
+    target_median: float,
+    min_identity: float = 0.50,
+) -> str | None:
+    """Attempt to slice a valid, in-frame core coding domain from an oversized feature.
+
+    Handles operon overruns (AP012494 archetype) and depositor pre-mRNA fusions.
+    Returns the sliced in-frame nucleotide sequence, or None if irrecoverable.
+    """
+    if not query_dna or len(query_dna) < int(target_median * 0.5):
+        return None
+
+    from Bio.Seq import Seq
+
+    # 1. Scan all 3 forward reading frames for the longest continuous open reading frame
+    best_orf_dna = None
+    max_len = 0
+    target_len = int(target_median)
+
+    for frame in range(3):
+        sub_dna = query_dna[frame:]
+        sub_len = len(sub_dna) - (len(sub_dna) % 3)
+        if sub_len < 45:
+            continue
+        sub_dna = sub_dna[:sub_len]
+
+        # Translate to locate stop codons
+        prot = str(Seq(sub_dna).translate(table=11))
+
+        # Split by stop codons to find uninterrupted peptides
+        peptides = prot.split("*")
+        curr_offset = 0
+        for pep in peptides:
+            pep_dna_len = len(pep) * 3
+            # Test if this continuous ORF matches expected gene dimensions (±35% of median)
+            if abs(len(pep) - (target_len // 3)) <= max(30, int(target_len // 3 * 0.35)):
+                orf_dna = sub_dna[curr_offset : curr_offset + pep_dna_len]
+                # Ensure no internal stops and valid triplet length
+                if len(orf_dna) % 3 == 0 and len(orf_dna) > max_len:
+                    max_len = len(orf_dna)
+                    best_orf_dna = orf_dna
+            curr_offset += pep_dna_len + 3  # skip the stop codon
+
+    # 2. Strict validation: Only return if rescued ORF matches expected biological bounds
+    if best_orf_dna and len(best_orf_dna) >= 45:
+        # Final sanity check: 0 internal stops
+        trans = str(Seq(best_orf_dna).translate(table=11))
+        if trans[:-1].count("*") == 0:
+            return best_orf_dna
+
+    return None
 
 
 # ---------------------------------------------------------------------------

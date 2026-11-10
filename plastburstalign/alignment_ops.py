@@ -1481,10 +1481,30 @@ class AlignmentCoordination:
             prefix = os.path.join(self._out_dir, f"nucl_{len(sources)}concat")
             partitions = parse_partitions_flag(self.user_params.get("partitions"))
             codon = bool(self.user_params.get("codon_partitions", False)) and is_cds
+            # Resolve requested output formats from user parameters
+            requested = self.user_params.get("output_formats")
+            if requested:
+                req_set = {f.lower() for f in requested}
+                do_fasta = "fasta" in req_set
+                do_nexus = "nexus" in req_set
+                do_phylip = "phylip" in req_set
+                # If 'raxml' is requested, ensure raxml partition is included
+                part_list = list(partitions)
+                if "raxml" in req_set and "raxml" not in part_list:
+                    part_list.append("raxml")
+            else:
+                do_fasta = True
+                do_nexus = True
+                do_phylip = bool(self.user_params.get("phylip", False))
+                part_list = partitions
+
             written = matrix.write_all(
                 prefix,
-                phylip=bool(self.user_params.get("phylip", False)),
-                partitions=partitions,
+                fasta=do_fasta,
+                nexus=do_nexus,
+                phylip=do_phylip,
+                partitions=part_list,
+                partition_format="none" if not do_nexus else "nexus",
                 codon_partitions=codon,
             )
             self._supermatrix_info = {

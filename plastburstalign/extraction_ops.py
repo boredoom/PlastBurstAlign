@@ -1742,12 +1742,33 @@ class DataCleaning:
                 if mode_str == "cds":
                     seq_record = store.get_sequence(region, taxon, "nucl")
                     if seq_record:
-                        is_valid_orf, _ = validate_cds_invariants(seq_record)
-                        # Retain valid in-frame clade expansions below gross structural cap
+                        # 1. Retain legitimate lineage expansions (Fabaceae accD, Passiflora rps18, Asteraceae ndhD)
+                        is_valid_orf, _ = validate_cds_invariants(seq_record, strict_start=False)
                         if is_valid_orf and float(length) <= structural_bound:
                             continue
 
+                        # 2. Salvage attempt: Extract core domain from operon overruns / unspliced pre-mRNAs
+                        if float(median) >= 60.0:
+                            from plastburstalign.qc import attempt_suborf_salvage
+                            salvaged_dna = attempt_suborf_salvage(
+                                query_dna=seq_record,
+                                target_median=float(median),
+                            )
+                            if salvaged_dna:
+                                from Bio.Seq import Seq
+                                salvaged_prot = str(Seq(salvaged_dna).translate(table=11)).rstrip("*")
+                                # Update SQLite store with both sliced nucleotide and translated protein
+                                store.put_sequence(region, taxon, "nucl", salvaged_dna)
+                                store.put_sequence(region, taxon, "prot", salvaged_prot)
+                                log.info(
+                                    f"    salvaged sub-ORF for {taxon} in {region}: "
+                                    f"{length} bp -> {len(salvaged_dna)} bp ({len(salvaged_prot)} aa)"
+                                )
+                                continue
+
+                # Reaches here only if truly irrecoverable (e.g. non-homologous contig bleed or broken frame)
                 outliers.append((taxon, length))
+
 
             for taxon, length in outliers:
                 store.delete_sequence(region, taxon, "nucl")
@@ -1771,14 +1792,15 @@ class DataCleaning:
                     f"> Tukey fence {fence:.1f} (median {median:.1f})"
                 )
 
-            remaining = list(store.iter_region_lengths(region, "nucl"))
-            if len(remaining) < 2:
-                log.info(
-                    f"    deactivating {region} after Tukey QC: "
-                    f"only {len(remaining)} active taxon sequence(s) remain "
-                    "(MAFFT requires N >= 2)"
-                )
-                self.plastid_data.remove_nuc(region)
+            if outliers:
+                remaining = list(store.iter_region_lengths(region, "nucl"))
+                if len(remaining) < 2:
+                    log.info(
+                        f"    deactivating {region} after Tukey QC: "
+                        f"only {len(remaining)} active taxon sequence(s) remain "
+                        "(MAFFT requires N >= 2)"
+                    )
+                    self.plastid_data.remove_nuc(region)
         return deleted
 
     def apply_strand_polarity_audit(self) -> int:
