@@ -448,6 +448,46 @@ class DiskBackedFeatureStore:
         row = cursor.fetchone()
         return str(row["sequence"]) if row and row["sequence"] is not None else None
 
+    def put_sequence(
+        self, region_name: str, taxon_name: str, seq_type: str, sequence: str
+    ) -> bool:
+        """Update or insert a sequence record for (region_name, taxon_name, seq_type)."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE sequence_records
+            SET sequence = :seq, seq_len = :len
+            WHERE region_name = :region AND taxon_name = :taxon AND seq_type = :type;
+            """,
+            {
+                "seq": sequence,
+                "len": len(sequence),
+                "region": region_name,
+                "taxon": taxon_name,
+                "type": seq_type,
+            },
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO sequence_records (
+                    region_name, taxon_name, seq_type, seq_id, description, sequence, seq_len, file_index
+                ) VALUES (
+                    :region, :taxon, :type, :taxon, '', :seq, :len, 0
+                );
+                """,
+                {
+                    "region": region_name,
+                    "taxon": taxon_name,
+                    "type": seq_type,
+                    "seq": sequence,
+                    "len": len(sequence),
+                },
+            )
+        if not self._in_transaction:
+            self._conn.commit()
+        return True
+
     def iter_region_lengths(
         self, region_name: str, seq_type: str = "nucl"
     ) -> Iterator[tuple[str, int]]:
